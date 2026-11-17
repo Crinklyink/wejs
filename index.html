@@ -3097,10 +3097,10 @@ function updateHUD(){
 }
 function openDialog(type){
  releaseLook();modal=type;showPanel(false);const titles={desk:['SIMULATED EXCHANGE','Trading desk'],portfolio:['RESIDENT ACCOUNT','Portfolio'],journal:['RESIDENT RECORD','Journal'],bed:['CITY RESIDENCE','Turn in for the night'],barn:['WILLOW FARM','Return to the city'],plot:['WILLOW FARM','Garden bed 0'+(selectedBed+1)],help:['GAME MENU','Controls & settings'],letter:['PERSONAL CORRESPONDENCE','From June'],greenhouse:['WILLOW FARM','The potting bench'],coffee:['EASTBANK CITY','At the coffee counter'],record:['THE LISTENING CORNER','Blue Sugar Tin']};
- if(type==='letter'){readLetter();updateHUD()}$('#modal-eyebrow').textContent=titles[type][0];$('#dialog-title').textContent=titles[type][1];document.querySelectorAll('.nav').forEach(b=>b.classList.toggle('active',b.dataset.tab===(['portfolio','journal'].includes(type)?type:'world')));
+ if(type==='letter'){readLetter();updateHUD()}$('#modal-eyebrow').textContent=titles[type][0];$('#dialog-title').textContent=titles[type][1];document.querySelectorAll('.nav[data-tab]').forEach(b=>b.classList.toggle('active',b.dataset.tab===(['portfolio','journal'].includes(type)?type:'world')));
  renderModal();if(!$('#dialog').open)$('#dialog').showModal()
 }
-function closeDialog(){if($('#dialog').open)$('#dialog').close();modal=null;document.querySelectorAll('.nav').forEach(b=>b.classList.toggle('active',b.dataset.tab==='world'))}
+function closeDialog(){if($('#dialog').open)$('#dialog').close();modal=null;document.querySelectorAll('.nav[data-tab]').forEach(b=>b.classList.toggle('active',b.dataset.tab==='world'))}
 function renderModal(){
  const el=$('#modal-body');if(!modal)return;
  if(modal==='greenhouse'){el.innerHTML=greenhouseHTML();return}if(modal==='letter'){el.innerHTML=letterHTML();return}
@@ -3122,7 +3122,7 @@ function renderModal(){
 function toggleSound(){state.sound=!state.sound;soundscape.enable(state.sound,state.world);persist();updateHUD();if(modal==='help')renderModal()}
 function wireUI(){
  icons();updateHUD();persist();$('#dash-toggle').onclick=()=>showPanel(!$('#sidebar').classList.contains('open'));$('#close-dashboard').onclick=()=>showPanel(false);$('#sound').onclick=toggleSound;$('#help').onclick=()=>openDialog('help');$('#mobile-panel').onclick=()=>showPanel(!$('#sidebar').classList.contains('open'));
- document.querySelectorAll('.nav').forEach(b=>b.onclick=()=>{closeDialog();showPanel(false);if(b.dataset.tab!=='world')openDialog(b.dataset.tab)});
+ document.querySelectorAll('.nav[data-tab]').forEach(b=>b.onclick=()=>{closeDialog();showPanel(false);if(b.dataset.tab!=='world')openDialog(b.dataset.tab)});
  $('#dialog').addEventListener('cancel',e=>{e.preventDefault();closeDialog()});$('#dialog').addEventListener('click',e=>{if(e.target===$('#dialog')){const r=e.target.getBoundingClientRect();if(e.clientX<r.left||e.clientX>r.right||e.clientY<r.top||e.clientY>r.bottom)closeDialog()}});$('#close').onclick=closeDialog;
  $('#primary').onclick=()=>requestStation(state.world==='city'?'desk':'plot'+Math.max(0,state.plots.findIndex(p=>p.stage==='ready')));$('#travel').onclick=()=>requestStation(state.world==='city'?'bed':'barn');
  $('#watch-list').onclick=e=>{const b=e.target.closest('button');if(!b)return;if(b.dataset.quote!==undefined){selectedStock=Number(b.dataset.quote);requestStation('desk')}else requestStation('plot'+b.dataset.bed)};
