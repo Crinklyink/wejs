@@ -50,7 +50,7 @@ class Renderer extends Camera {
  constructor(canvas){super(canvas);const gl=this.gl=canvas.getContext('webgl',{antialias:true,alpha:false,powerPreference:'high-performance'});if(!gl)throw Error('WebGL unavailable');
    const compile=(vs,fs)=>{const p=gl.createProgram();for(const [type,src] of [[gl.VERTEX_SHADER,vs],[gl.FRAGMENT_SHADER,fs]]){const sh=gl.createShader(type);gl.shaderSource(sh,src);gl.compileShader(sh);if(!gl.getShaderParameter(sh,gl.COMPILE_STATUS))throw Error(gl.getShaderInfoLog(sh));gl.attachShader(p,sh)}gl.linkProgram(p);if(!gl.getProgramParameter(p,gl.LINK_STATUS))throw Error(gl.getProgramInfoLog(p));return p};
    this.main=compile(SURFACE_VERT,SURFACE_FRAG);this.depth=compile(DEPTH_VERT,DEPTH_FRAG);this.sky=compile(SKY_VERT,SKY_FRAG);
-   const info=p=>Object.fromEntries(['pos','normal','color','material','vp','lightVP','eye','lightDir','clock','farm','weather','shadowOn','shadowTex','camForward','camRight','camUp','tanHalf','aspect','handTransform','handPass','reflectReady','viewSize','captureFloor','glassBack','glassSide','woodFloor'].map((k,i)=>[k,i<4?gl.getAttribLocation(p,k):gl.getUniformLocation(p,k)]));
+   const info=p=>Object.fromEntries(['pos','normal','color','material','vp','lightVP','eye','lightDir','clock','farm','weather','shadowOn','shadowTex','camForward','camRight','camUp','tanHalf','aspect','handTransform','handPass','reflectReady','viewSize','captureFloor','glassBack','glassSide','woodFloor','cityBounds[0]'].map((k,i)=>[k,i<4?gl.getAttribLocation(p,k):gl.getUniformLocation(p,k)]));
    this.mi=info(this.main);this.di=info(this.depth);this.si=info(this.sky);this.full=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,this.full);gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1,3,-1,-1,3]),gl.STATIC_DRAW);
    this.frame=gl.createFramebuffer();gl.bindFramebuffer(gl.FRAMEBUFFER,this.frame);this.ssize=Math.min(gl.getParameter(gl.MAX_TEXTURE_SIZE),2048);
    this.shadow=gl.createTexture();gl.bindTexture(gl.TEXTURE_2D,this.shadow);gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,this.ssize,this.ssize,0,gl.RGBA,gl.UNSIGNED_BYTE,null);
@@ -58,10 +58,10 @@ class Renderer extends Camera {
    gl.framebufferTexture2D(gl.FRAMEBUFFER,gl.COLOR_ATTACHMENT0,gl.TEXTURE_2D,this.shadow,0);this.db=gl.createRenderbuffer();gl.bindRenderbuffer(gl.RENDERBUFFER,this.db);gl.renderbufferStorage(gl.RENDERBUFFER,gl.DEPTH_COMPONENT16,this.ssize,this.ssize);gl.framebufferRenderbuffer(gl.FRAMEBUFFER,gl.DEPTH_ATTACHMENT,gl.RENDERBUFFER,this.db);this.hasShadow=gl.checkFramebufferStatus(gl.FRAMEBUFFER)===gl.FRAMEBUFFER_COMPLETE;gl.bindFramebuffer(gl.FRAMEBUFFER,null);
    this.available=['pos','normal','color','material'];this.staticMeshes=[];this.glassMeshes=[]
  }
- mesh(data){if(!data?.length)return null;const gl=this.gl,b=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,b);gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(data),gl.STATIC_DRAW);return {buffer:b,count:data.length/11}}
+ mesh(data){if(!data?.length)return null;const gl=this.gl,b=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,b);gl.bufferData(gl.ARRAY_BUFFER,data.length*4,gl.STATIC_DRAW);data.eachPage((page,at)=>gl.bufferSubData(gl.ARRAY_BUFFER,at*4,page));return {buffer:b,count:data.length/11}}
  build(farm,plots,story={}){
-   this.farm=farm;this.refKey='';const gl=this.gl;for(const m of [...this.staticMeshes,...this.glassMeshes])if(m)gl.deleteBuffer(m.buffer);this.staticMeshes=[];this.glassMeshes=[];
-   if(!farm){let g=new Geometry(543);buildCity(g);this.staticMeshes.push(this.mesh(g.data))}
+   this.farm=farm;this.refKey='';const gl=this.gl;for(const m of [...this.staticMeshes,...this.glassMeshes,this.screenMesh])if(m)gl.deleteBuffer(m.buffer);this.screenMesh=null;this.staticMeshes=[];this.glassMeshes=[];
+   if(!farm){let g=new Geometry(543);buildCity(g);this.reflectors=g.reflectors;this.staticMeshes.push(this.mesh(g.data))}
    let g=new Geometry(farm?43291:183);if(farm)buildFarm(g,plots,story);else{buildPenthouse(g);addWindowGlass(g)}
    this.local=this.mesh(g.data);this.staticMeshes.push(this.local);this.glassMeshes.push(this.mesh(g.glass));this.dir=skyDirections(farm);
    const shadowRadius=farm?27:11.5;this.lightVP=matrixMult(ortho(shadowRadius,shadowRadius,.1,135),viewMatrix(this.dir.map(x=>x*62),[0,0,0]));this.sceneDirty=this.dirty=true
@@ -69,7 +69,13 @@ class Renderer extends Camera {
  draw(mesh,i){if(!mesh)return;const gl=this.gl;gl.bindBuffer(gl.ARRAY_BUFFER,mesh.buffer);
    for(const [k,size,offset] of [['pos',3,0],['normal',3,12],['color',3,24],['material',2,36]])if(i[k]>=0){gl.enableVertexAttribArray(i[k]);gl.vertexAttribPointer(i[k],size,gl.FLOAT,false,44,offset)}gl.drawArrays(gl.TRIANGLES,0,mesh.count);for(const k of this.available)if(i[k]>=0)gl.disableVertexAttribArray(i[k])
  }
- common(i){const gl=this.gl;gl.uniform1f(i.farm,this.farm?1:0);gl.uniform1f(i.clock,this.clock);gl.uniform1f(i.weather,this.weather);gl.uniform3fv(i.lightDir,this.dir)}
+ common(i){const gl=this.gl;gl.uniform1f(i.farm,this.farm?1:0);gl.uniform1f(i.clock,this.clock);gl.uniform1f(i.weather,this.weather);gl.uniform3fv(i.lightDir,this.dir);if(i['cityBounds[0]']&&this.reflectors&&!this.farm)gl.uniform4fv(i['cityBounds[0]'],this.reflectors)}
+ updatePanels(stocks){
+   if(this.farm)return;
+   const g=new Geometry(81);buildPanelContent(g,stocks);
+   const next=this.mesh(g.data);if(this.screenMesh)this.gl.deleteBuffer(this.screenMesh.buffer);
+   this.screenMesh=next;this.refKey='';this.dirty=true
+ }
   prepareReflections(){
    const gl=this.gl,w=Math.min(960,Math.max(64,Math.round(this.canvas.width*.42))),h=Math.min(700,Math.max(64,Math.round(this.canvas.height*.42)));
    if(this.refBuffers?.[0]?.w===w&&this.refBuffers[0].h===h)return;
@@ -85,7 +91,7 @@ class Renderer extends Camera {
    for(const [j,k] of ['glassBack','glassSide','woodFloor'].entries()){gl.activeTexture(gl.TEXTURE1+j);gl.bindTexture(gl.TEXTURE_2D,this.shadow);gl.uniform1i(i[k],j+1)}
    const planes=[[2,-4.57],[0,-6.39],[1,.032]];
    for(let j=0;j<3;j++){const a=this.refBuffers[j],[axis,loc]=planes[j],eye=this.eye.slice(),reflection=[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1];reflection[axis*5]=-1;reflection[12+axis]=2*loc;eye[axis]=2*loc-eye[axis];
-     gl.bindFramebuffer(gl.FRAMEBUFFER,a.fb);gl.viewport(0,0,a.w,a.h);gl.clearColor(0,0,0,0);gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);gl.enable(gl.DEPTH_TEST);gl.uniform1f(i.captureFloor,j===2?1:0);gl.uniform3fv(i.eye,eye);gl.uniformMatrix4fv(i.vp,false,matrixMult(this.vp,reflection));this.draw(this.local,i)}
+     gl.bindFramebuffer(gl.FRAMEBUFFER,a.fb);gl.viewport(0,0,a.w,a.h);gl.clearColor(0,0,0,0);gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);gl.enable(gl.DEPTH_TEST);gl.uniform1f(i.captureFloor,j===2?1:0);gl.uniform3fv(i.eye,eye);gl.uniformMatrix4fv(i.vp,false,matrixMult(this.vp,reflection));this.draw(this.local,i);this.draw(this.screenMesh,i)}
    gl.uniform1f(i.captureFloor,0);gl.activeTexture(gl.TEXTURE0);gl.bindFramebuffer(gl.FRAMEBUFFER,null);return true
   }
 
@@ -94,7 +100,7 @@ class Renderer extends Camera {
    if(this.sceneDirty&&this.hasShadow){gl.bindFramebuffer(gl.FRAMEBUFFER,this.frame);gl.viewport(0,0,this.ssize,this.ssize);gl.enable(gl.DEPTH_TEST);gl.clearColor(1,1,1,1);gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);gl.useProgram(this.depth);gl.uniformMatrix4fv(this.di.vp,false,this.lightVP);this.draw(this.local,this.di);this.sceneDirty=false}
    const reflectOn=this.reflections();gl.bindFramebuffer(gl.FRAMEBUFFER,null);gl.viewport(0,0,this.canvas.width,this.canvas.height);gl.clear(gl.DEPTH_BUFFER_BIT);gl.disable(gl.DEPTH_TEST);gl.useProgram(this.sky);const s=this.si;this.common(s);gl.uniform3fv(s.camForward,this.forward);gl.uniform3fv(s.camRight,this.right);gl.uniform3fv(s.camUp,this.up);gl.uniform1f(s.tanHalf,this.tanHalf);gl.uniform1f(s.aspect,this.aspect);gl.bindBuffer(gl.ARRAY_BUFFER,this.full);gl.enableVertexAttribArray(s.pos);gl.vertexAttribPointer(s.pos,2,gl.FLOAT,false,0,0);gl.drawArrays(gl.TRIANGLES,0,3);gl.disableVertexAttribArray(s.pos);
    gl.enable(gl.DEPTH_TEST);gl.useProgram(this.main);const i=this.mi;this.common(i);gl.uniformMatrix4fv(i.vp,false,this.vp);gl.uniformMatrix4fv(i.lightVP,false,this.lightVP);gl.uniform3fv(i.eye,this.eye);gl.uniform1f(i.handPass,0);gl.uniform1f(i.reflectReady,reflectOn?1:0);gl.uniform1f(i.captureFloor,0);gl.uniform2f(i.viewSize,this.canvas.width,this.canvas.height);for(const [j,name] of ['glassBack','glassSide','woodFloor'].entries()){gl.activeTexture(gl.TEXTURE1+j);gl.bindTexture(gl.TEXTURE_2D,reflectOn?this.refBuffers[j].tex:this.shadow);gl.uniform1i(i[name],j+1)}gl.uniform1f(i.shadowOn,this.hasShadow?1:0);gl.activeTexture(gl.TEXTURE0);gl.bindTexture(gl.TEXTURE_2D,this.shadow);gl.uniform1i(i.shadowTex,0);
-   if(!this.farm){gl.uniformMatrix4fv(i.vp,false,this.cityVP);this.draw(this.staticMeshes[0],i);gl.clear(gl.DEPTH_BUFFER_BIT);gl.uniformMatrix4fv(i.vp,false,this.vp)}this.draw(this.local,i);gl.enable(gl.BLEND);gl.blendFunc(gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA);gl.depthMask(false);for(const m of this.glassMeshes)this.draw(m,i);gl.depthMask(true);gl.disable(gl.BLEND);
+   if(!this.farm){gl.uniformMatrix4fv(i.vp,false,this.cityVP);this.draw(this.staticMeshes[0],i);gl.clear(gl.DEPTH_BUFFER_BIT);gl.uniformMatrix4fv(i.vp,false,this.vp)}this.draw(this.local,i);this.draw(this.screenMesh,i);gl.enable(gl.BLEND);gl.blendFunc(gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA);gl.depthMask(false);for(const m of this.glassMeshes)this.draw(m,i);gl.depthMask(true);gl.disable(gl.BLEND);
    if(this.effect&&this.actionMesh){if(performance.now()-this.effect.start<this.effect.length){gl.clear(gl.DEPTH_BUFFER_BIT);gl.uniform1f(i.handPass,1);gl.uniformMatrix4fv(i.handTransform,false,handMatrix(this,this.effect));this.draw(this.actionMesh,i);gl.uniform1f(i.handPass,0)}else{gl.deleteBuffer(this.actionMesh.buffer);this.actionMesh=null;this.effect=null}}
    this.dirty=false;return true
  }
@@ -113,10 +119,10 @@ function handMatrix(r,e){
 }
 function performAction(name,crop){
  closeDialog();soundscape.cue(name);
- if(renderer&&!renderer.isSoftware){
-   const g=new Geometry(22);buildHandProp(g,name,crop);if(name==='water')for(let j=0;j<48;j++)g.ball(-.20+g.rand()*.023,.056+g.rand()*.018,-.083+j*.0009,.0037,.013,.0037,'#89b8ca',{mat:'droplet',glow:.30});const gl=renderer.gl;
-   if(renderer.actionMesh)gl.deleteBuffer(renderer.actionMesh.buffer);
-   renderer.actionMesh=renderer.mesh(g.data);renderer.effect={action:name,start:performance.now(),length:name==='water'?1700:1250};renderer.dirty=true
+ if(renderer){
+   const g=new Geometry(22);buildHandProp(g,name,crop);if(name==='water')for(let j=0;j<48;j++)g.ball(-.20+g.rand()*.023,.056+g.rand()*.018,-.083+j*.0009,.0037,.013,.0037,'#89b8ca',{mat:'droplet',glow:.30});if(renderer.isSoftware)renderer.actionMesh=g.data.packed();
+   else {if(renderer.actionMesh)renderer.gl.deleteBuffer(renderer.actionMesh.buffer);renderer.actionMesh=renderer.mesh(g.data)}
+   renderer.effect={action:name,start:performance.now(),length:name==='water'?1700:1250};renderer.dirty=true
  }
 }
 

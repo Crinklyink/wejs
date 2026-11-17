@@ -44,7 +44,7 @@ body{overflow:hidden}.topbar{height:56px;background:#17181df5;border-bottom:1px 
   </div><div class="travel"><div class="dest-icon"><i id="dest-icon" data-icon="sprout"></i></div><div><small>NEXT DESTINATION</small><b id="dest"></b></div><button id="travel" aria-label="Travel" title="Travel"><i data-icon="arrow-right"></i></button></div></aside>
 </main>
 <dialog id="dialog" aria-labelledby="dialog-title"><div class="modal-top"><div><div class="eyebrow" id="modal-eyebrow"></div><h2 id="dialog-title"></h2></div><button class="icon-btn" id="close" title="Close" aria-label="Close"><i data-icon="x"></i></button></div><div id="modal-body"></div></dialog>
-<script>/* Lightweight flat-shaded mesh builder and shadow-mapped WebGL renderer. */
+<script>/* Interleaved geometry with face, bevel and smooth analytic vertex normals. */
 const V3 = {
   sub:(a,b)=>a.map((n,i)=>n-b[i]), dot:(a,b)=>a.reduce((s,n,i)=>s+n*b[i],0),
   cross:(a,b)=>[a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]],
@@ -57,7 +57,7 @@ function viewMatrix(eye,at){
 }
 function ortho(w,h,n,f){return [1/w,0,0,0,0,1/h,0,0,0,0,-2/(f-n),0,0,0,-(f+n)/(f-n),1]}
 function matrixMult(a,b){const o=new Float32Array(16);for(let j=0;j<4;j++)for(let i=0;i<4;i++)for(let k=0;k<4;k++)o[j*4+i]+=a[k*4+i]*b[j*4+k];return o}
-const colorMap=new Map(), matIds={plain:0,wood:1,fabric:2,stone:3,metal:4,walnut:5,oak:6,linen:7,leather:8,marble:9,plaster:10,brass:11,ceramic:12,glass:13,screen:14,grass:15,leaf:16,soil:17,gravel:18,bark:19,water:20,windmill:21,trafficZ:22,trafficX:23,droplet:24,canopy:25};
+const colorMap=new Map(), matIds={plain:0,wood:1,fabric:2,stone:3,metal:4,walnut:5,oak:6,linen:7,leather:8,marble:9,plaster:10,brass:11,ceramic:12,glass:13,screen:14,grass:15,leaf:16,soil:17,gravel:18,bark:19,water:20,windmill:21,trafficZ:22,trafficX:23,droplet:24,canopy:25,facadeGlass:26};
 function rgb(col){
   if(colorMap.has(col))return colorMap.get(col);
   let s=col.replace('#','');if(s.length===3)s=[...s].map(c=>c+c).join('');
@@ -68,8 +68,22 @@ function rotator(o){
   const a=Math.cos(o.rx||0),b=Math.sin(o.rx||0),c=Math.cos(o.ry||0),d=Math.sin(o.ry||0),e=Math.cos(o.rz||0),f=Math.sin(o.rz||0);
   return ([x,y,z])=>{const t=y*a-z*b,u=y*b+z*a,v=x*c+u*d;return [v*e-t*f,v*f+t*e,-x*d+u*c]}
 }
+// Keep large scenes in upload-sized blocks while their geometry is assembled.
+class VertexStream {
+  constructor(){this.pages=[];this.length=0;this.capacity=11*8192}
+  push(...vertex){
+    const offset=this.length%this.capacity;
+    if(offset===0)this.pages.push(new Float32Array(this.capacity));
+    this.pages[this.pages.length-1].set(vertex,offset);this.length+=vertex.length
+  }
+  eachPage(fn){
+    let at=0;
+    for(const p of this.pages){const used=Math.min(this.length-at,p.length);fn(p.subarray(0,used),at);at+=used}
+  }
+  packed(){const data=new Float32Array(this.length);this.eachPage((p,at)=>data.set(p,at));return data}
+}
 class Geometry{
-  constructor(seed=7){this.seed=seed;this.data=[];this.glass=[];this.rand=this.rand.bind(this)}
+  constructor(seed=7){this.seed=seed;this.data=new VertexStream();this.glass=new VertexStream();this.rand=this.rand.bind(this)}
   rand(){this.seed=(1664525*this.seed+1013904223)>>>0;return this.seed/4294967296}
   polygon(points,col,o={},norm=null){
     const n=norm||V3.unit(V3.cross(V3.sub(points[1],points[0]),V3.sub(points[2],points[0]))), c=rgb(col), m=matIds[o.mat]||0, glow=o.glow||0;
@@ -81,13 +95,37 @@ class Geometry{
     for(const face of [[4,5,6,7],[1,0,3,2],[5,1,2,6],[0,4,7,3],[7,6,2,3],[0,1,5,4]])this.polygon(face.map(i=>p[i]),col,o)
   }
   cyl(x,y,z,rt,rb,h,sides,col,o={}){
-    const rot=rotator(o),top=[],bottom=[];for(let i=0;i<sides;i++){let a=i*2*Math.PI/sides;for(const [r,dy,arr] of [[rt,h/2,top],[rb,-h/2,bottom]]){const v=rot([Math.cos(a)*r,dy,Math.sin(a)*r]);arr.push([x+v[0],y+v[1],z+v[2]])}}
-    if(rt>0)this.polygon([...top].reverse(),col,o);if(rb>0)this.polygon(bottom,col,o);
-    for(let i=0;i<sides;i++){const j=(i+1)%sides;if(rt===0)this.polygon([bottom[i],top[j],bottom[j]],col,o);else if(rb===0)this.polygon([bottom[i],top[i],top[j]],col,o);else this.polygon([bottom[i],top[i],top[j],bottom[j]],col,o)}
+    const rot=rotator(o), top=[],bottom=[],normals=[];
+    for(let i=0;i<sides;i++){
+      const a=i*Math.PI*2/sides,co=Math.cos(a),si=Math.sin(a);
+      for(const [r,dy,ring] of [[rt,h/2,top],[rb,-h/2,bottom]]){
+        const v=rot([co*r,dy,si*r]);ring.push([x+v[0],y+v[1],z+v[2]])
+      }
+      normals.push(rot(V3.unit([co,(rb-rt)/(h||1),si])))
+    }
+    if(rt>0)this.polygon([...top].reverse(),col,o,rot([0,1,0]));
+    if(rb>0)this.polygon(bottom,col,o,rot([0,-1,0]));
+    for(let i=0;i<sides;i++){
+      const j=(i+1)%sides,face=[bottom[i],top[i],top[j],bottom[j]];
+      if(!rt)this.polygon([face[0],face[2],face[3]],col,o);
+      else if(!rb)this.polygon(face.slice(0,3),col,o);
+      else if(sides>=9)this.smoothFace(...face,[normals[i],normals[i],normals[j],normals[j]],col,o);
+      else this.polygon(face,col,o)
+    }
   }
   ball(x,y,z,w,h,d,col,o={}){
-    const sides=8,rings=5,rot=rotator(o),p=(i,j)=>{const a=i*Math.PI*2/sides,b=-Math.PI*.5+j*Math.PI/rings,cb=Math.cos(b),v=rot([w*.5*cb*Math.cos(a),h*.5*Math.sin(b),d*.5*cb*Math.sin(a)]);return [x+v[0],y+v[1],z+v[2]]};
-    for(let j=0;j<rings;j++)for(let i=0;i<sides;i++){const a=p(i,j),b=p(i,j+1),c=p(i+1,j+1),d1=p(i+1,j);this.polygon(j===0?[a,b,c]:j===rings-1?[a,b,d1]:[a,b,c,d1],col,o)}
+    const size=Math.max(w,h,d),sides=size<.06?8:size<.25?12:16,rings=Math.ceil(sides*.5),rot=rotator(o);
+    const rows=Array.from({length:rings+1},(_,j)=>Array.from({length:sides},(_,i)=>{
+      const a=i*Math.PI*2/sides,b=(j/rings-.5)*Math.PI,cb=Math.cos(b);
+      const unit=[cb*Math.cos(a),Math.sin(b),cb*Math.sin(a)];
+      const v=rot([w*unit[0]/2,h*unit[1]/2,d*unit[2]/2]);
+      return {p:[v[0]+x,v[1]+y,v[2]+z],n:rot(V3.unit([unit[0]/Math.max(w,.0001),unit[1]/Math.max(h,.0001),unit[2]/Math.max(d,.0001)]))}
+    }));
+    const c=rgb(col),m=matIds[o.mat]||0,out=m===13?this.glass:this.data;
+    for(let j=0;j<rings;j++)for(let i=0;i<sides;i++){
+      const k=(i+1)%sides,a=rows[j][i],b=rows[j+1][i],c1=rows[j+1][k],d1=rows[j][k];
+      for(const v of j===0?[a,b,c1]:j===rings-1?[a,b,d1]:[a,b,c1,a,c1,d1])out.push(...v.p,...v.n,...c,m,o.glow||0)
+    }
   }
   beam(a,b,r,col,o={}){
     const dir=V3.sub(b,a),len=Math.hypot(...dir);if(!len)return;
@@ -163,6 +201,7 @@ uniform float shadowOn;
 uniform sampler2D glassBack,glassSide,woodFloor;
 uniform vec2 viewSize;
 uniform float reflectReady,captureFloor;
+uniform vec4 cityBounds[16];
 
 float rectOcclusion(vec2 at,vec2 center,vec2 halfSize,float spread) {
   vec2 d=abs(at-center)-halfSize;
@@ -224,6 +263,37 @@ void main() {
   vec3 bitangent=normalize(cross(baseN,tangent));
   vec2 st=vec2(dot(p,tangent),dot(p,bitangent));
   // Thin glazing is drawn in a separate depth-tested, alpha-blended pass.
+  if(kind==26.) {
+    // Tilt each insulated unit very slightly. Straight mullions retain their
+    // silhouettes while reflections flex across the pressure-bowed glass.
+    float along=dot(p,bitangent);
+    vec2 panel=fract(vec2(along/2.18,(p.y+112.)/3.25));
+    vec3 paneNormal=normalize(baseN+.009*(panel.x-.5)*bitangent+.006*(panel.y-.5)*tangent);
+    vec3 ray=reflect(-view,paneNormal);
+    vec3 inv=sign(ray+vec3(.0000001))/max(abs(ray),vec3(.00001));
+    float nearest=600.;vec3 reflected=skyBase(ray,sun);
+    for(int j=0;j<16;j++){
+      vec4 b=cityBounds[j];float top=floor(b.w/1024.)-144.;
+      vec3 lo=vec3(b.x-b.z,-112.,b.y-mod(b.w,1024.)/32.);
+      vec3 hi=vec3(b.x+b.z,top,b.y+mod(b.w,1024.)/32.);
+      vec3 t0=(lo-p)*inv,t1=(hi-p)*inv,enter=min(t0,t1),leave=max(t0,t1);
+      float t=max(enter.x,max(enter.y,enter.z));
+      if(t>1.45&&t<nearest&&t<min(leave.x,min(leave.y,leave.z))){
+        nearest=t;vec3 hit=p+t*ray;bool faceX=enter.x>enter.z;
+        vec2 grid=vec2((faceX?hit.z:hit.x)/2.2,(hit.y+112.)/3.15);
+        vec2 cell=fract(grid);float inhabit=hash2(floor(grid)+b.xy);
+        vec3 wall=mix(vec3(.19,.234,.26),vec3(.35,.36,.36),faceX?.62:.18);
+        float lit=smoothstep(.68,.81,inhabit)*smoothstep(.07,.16,cell.x)*(1.-smoothstep(.85,.95,cell.x))*smoothstep(.23,.30,cell.y)*(1.-smoothstep(.80,.89,cell.y));
+        reflected=mix(wall,vec3(.68,.60,.44),lit);
+        if(enter.y>=max(enter.x,enter.z))reflected=vec3(.44,.44,.42);
+        reflected=mix(reflected,horizonColor(ray,sun),smoothstep(38.,165.,t)*.38);
+      }
+    }
+    float fresnel=.32+.58*pow(1.-abs(dot(paneNormal,view)),3.);
+    vec3 pane=mix(c*.51,reflected*vec3(.87,.97,1.),fresnel+.13);
+    pane=mix(pane,horizonColor(-view,sun),smoothstep(67.,210.,distance0)*.6);
+    gl_FragColor=vec4(pane,1.);return;
+  }
   if(kind==13.) {
     if(dot(norm,view)<0.) norm=-norm;
     float ndv=saturate(dot(norm,view)), grazing=pow(1.-ndv,4.);
@@ -231,7 +301,7 @@ void main() {
     vec3 sky=skyBase(refl,sun);
     float glint=pow(max(dot(refl,sun),0.),640.);
     vec3 tint=mix(vec3(.42,.55,.60),sky,.72)+vec3(.45,.35,.22)*glint;
-    if(farm<.5 && reflectReady>.5){
+    if(farm<.5 && reflectReady>.5 && (abs(p.z+4.57)<.055 || abs(p.x+6.39)<.055)){
       vec2 uv=gl_FragCoord.xy/viewSize;
       vec4 room=abs(norm.z)>abs(norm.x)?texture2D(glassBack,uv):texture2D(glassSide,uv);
       tint=mix(tint,room.rgb*.92+.025,room.a*.93);
@@ -516,7 +586,7 @@ class Renderer extends Camera {
  constructor(canvas){super(canvas);const gl=this.gl=canvas.getContext('webgl',{antialias:true,alpha:false,powerPreference:'high-performance'});if(!gl)throw Error('WebGL unavailable');
    const compile=(vs,fs)=>{const p=gl.createProgram();for(const [type,src] of [[gl.VERTEX_SHADER,vs],[gl.FRAGMENT_SHADER,fs]]){const sh=gl.createShader(type);gl.shaderSource(sh,src);gl.compileShader(sh);if(!gl.getShaderParameter(sh,gl.COMPILE_STATUS))throw Error(gl.getShaderInfoLog(sh));gl.attachShader(p,sh)}gl.linkProgram(p);if(!gl.getProgramParameter(p,gl.LINK_STATUS))throw Error(gl.getProgramInfoLog(p));return p};
    this.main=compile(SURFACE_VERT,SURFACE_FRAG);this.depth=compile(DEPTH_VERT,DEPTH_FRAG);this.sky=compile(SKY_VERT,SKY_FRAG);
-   const info=p=>Object.fromEntries(['pos','normal','color','material','vp','lightVP','eye','lightDir','clock','farm','weather','shadowOn','shadowTex','camForward','camRight','camUp','tanHalf','aspect','handTransform','handPass','reflectReady','viewSize','captureFloor','glassBack','glassSide','woodFloor'].map((k,i)=>[k,i<4?gl.getAttribLocation(p,k):gl.getUniformLocation(p,k)]));
+   const info=p=>Object.fromEntries(['pos','normal','color','material','vp','lightVP','eye','lightDir','clock','farm','weather','shadowOn','shadowTex','camForward','camRight','camUp','tanHalf','aspect','handTransform','handPass','reflectReady','viewSize','captureFloor','glassBack','glassSide','woodFloor','cityBounds[0]'].map((k,i)=>[k,i<4?gl.getAttribLocation(p,k):gl.getUniformLocation(p,k)]));
    this.mi=info(this.main);this.di=info(this.depth);this.si=info(this.sky);this.full=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,this.full);gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1,3,-1,-1,3]),gl.STATIC_DRAW);
    this.frame=gl.createFramebuffer();gl.bindFramebuffer(gl.FRAMEBUFFER,this.frame);this.ssize=Math.min(gl.getParameter(gl.MAX_TEXTURE_SIZE),2048);
    this.shadow=gl.createTexture();gl.bindTexture(gl.TEXTURE_2D,this.shadow);gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,this.ssize,this.ssize,0,gl.RGBA,gl.UNSIGNED_BYTE,null);
@@ -524,10 +594,10 @@ class Renderer extends Camera {
    gl.framebufferTexture2D(gl.FRAMEBUFFER,gl.COLOR_ATTACHMENT0,gl.TEXTURE_2D,this.shadow,0);this.db=gl.createRenderbuffer();gl.bindRenderbuffer(gl.RENDERBUFFER,this.db);gl.renderbufferStorage(gl.RENDERBUFFER,gl.DEPTH_COMPONENT16,this.ssize,this.ssize);gl.framebufferRenderbuffer(gl.FRAMEBUFFER,gl.DEPTH_ATTACHMENT,gl.RENDERBUFFER,this.db);this.hasShadow=gl.checkFramebufferStatus(gl.FRAMEBUFFER)===gl.FRAMEBUFFER_COMPLETE;gl.bindFramebuffer(gl.FRAMEBUFFER,null);
    this.available=['pos','normal','color','material'];this.staticMeshes=[];this.glassMeshes=[]
  }
- mesh(data){if(!data?.length)return null;const gl=this.gl,b=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,b);gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(data),gl.STATIC_DRAW);return {buffer:b,count:data.length/11}}
+ mesh(data){if(!data?.length)return null;const gl=this.gl,b=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,b);gl.bufferData(gl.ARRAY_BUFFER,data.length*4,gl.STATIC_DRAW);data.eachPage((page,at)=>gl.bufferSubData(gl.ARRAY_BUFFER,at*4,page));return {buffer:b,count:data.length/11}}
  build(farm,plots,story={}){
-   this.farm=farm;this.refKey='';const gl=this.gl;for(const m of [...this.staticMeshes,...this.glassMeshes])if(m)gl.deleteBuffer(m.buffer);this.staticMeshes=[];this.glassMeshes=[];
-   if(!farm){let g=new Geometry(543);buildCity(g);this.staticMeshes.push(this.mesh(g.data))}
+   this.farm=farm;this.refKey='';const gl=this.gl;for(const m of [...this.staticMeshes,...this.glassMeshes,this.screenMesh])if(m)gl.deleteBuffer(m.buffer);this.screenMesh=null;this.staticMeshes=[];this.glassMeshes=[];
+   if(!farm){let g=new Geometry(543);buildCity(g);this.reflectors=g.reflectors;this.staticMeshes.push(this.mesh(g.data))}
    let g=new Geometry(farm?43291:183);if(farm)buildFarm(g,plots,story);else{buildPenthouse(g);addWindowGlass(g)}
    this.local=this.mesh(g.data);this.staticMeshes.push(this.local);this.glassMeshes.push(this.mesh(g.glass));this.dir=skyDirections(farm);
    const shadowRadius=farm?27:11.5;this.lightVP=matrixMult(ortho(shadowRadius,shadowRadius,.1,135),viewMatrix(this.dir.map(x=>x*62),[0,0,0]));this.sceneDirty=this.dirty=true
@@ -535,7 +605,13 @@ class Renderer extends Camera {
  draw(mesh,i){if(!mesh)return;const gl=this.gl;gl.bindBuffer(gl.ARRAY_BUFFER,mesh.buffer);
    for(const [k,size,offset] of [['pos',3,0],['normal',3,12],['color',3,24],['material',2,36]])if(i[k]>=0){gl.enableVertexAttribArray(i[k]);gl.vertexAttribPointer(i[k],size,gl.FLOAT,false,44,offset)}gl.drawArrays(gl.TRIANGLES,0,mesh.count);for(const k of this.available)if(i[k]>=0)gl.disableVertexAttribArray(i[k])
  }
- common(i){const gl=this.gl;gl.uniform1f(i.farm,this.farm?1:0);gl.uniform1f(i.clock,this.clock);gl.uniform1f(i.weather,this.weather);gl.uniform3fv(i.lightDir,this.dir)}
+ common(i){const gl=this.gl;gl.uniform1f(i.farm,this.farm?1:0);gl.uniform1f(i.clock,this.clock);gl.uniform1f(i.weather,this.weather);gl.uniform3fv(i.lightDir,this.dir);if(i['cityBounds[0]']&&this.reflectors&&!this.farm)gl.uniform4fv(i['cityBounds[0]'],this.reflectors)}
+ updatePanels(stocks){
+   if(this.farm)return;
+   const g=new Geometry(81);buildPanelContent(g,stocks);
+   const next=this.mesh(g.data);if(this.screenMesh)this.gl.deleteBuffer(this.screenMesh.buffer);
+   this.screenMesh=next;this.refKey='';this.dirty=true
+ }
   prepareReflections(){
    const gl=this.gl,w=Math.min(960,Math.max(64,Math.round(this.canvas.width*.42))),h=Math.min(700,Math.max(64,Math.round(this.canvas.height*.42)));
    if(this.refBuffers?.[0]?.w===w&&this.refBuffers[0].h===h)return;
@@ -551,7 +627,7 @@ class Renderer extends Camera {
    for(const [j,k] of ['glassBack','glassSide','woodFloor'].entries()){gl.activeTexture(gl.TEXTURE1+j);gl.bindTexture(gl.TEXTURE_2D,this.shadow);gl.uniform1i(i[k],j+1)}
    const planes=[[2,-4.57],[0,-6.39],[1,.032]];
    for(let j=0;j<3;j++){const a=this.refBuffers[j],[axis,loc]=planes[j],eye=this.eye.slice(),reflection=[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1];reflection[axis*5]=-1;reflection[12+axis]=2*loc;eye[axis]=2*loc-eye[axis];
-     gl.bindFramebuffer(gl.FRAMEBUFFER,a.fb);gl.viewport(0,0,a.w,a.h);gl.clearColor(0,0,0,0);gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);gl.enable(gl.DEPTH_TEST);gl.uniform1f(i.captureFloor,j===2?1:0);gl.uniform3fv(i.eye,eye);gl.uniformMatrix4fv(i.vp,false,matrixMult(this.vp,reflection));this.draw(this.local,i)}
+     gl.bindFramebuffer(gl.FRAMEBUFFER,a.fb);gl.viewport(0,0,a.w,a.h);gl.clearColor(0,0,0,0);gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);gl.enable(gl.DEPTH_TEST);gl.uniform1f(i.captureFloor,j===2?1:0);gl.uniform3fv(i.eye,eye);gl.uniformMatrix4fv(i.vp,false,matrixMult(this.vp,reflection));this.draw(this.local,i);this.draw(this.screenMesh,i)}
    gl.uniform1f(i.captureFloor,0);gl.activeTexture(gl.TEXTURE0);gl.bindFramebuffer(gl.FRAMEBUFFER,null);return true
   }
 
@@ -560,7 +636,7 @@ class Renderer extends Camera {
    if(this.sceneDirty&&this.hasShadow){gl.bindFramebuffer(gl.FRAMEBUFFER,this.frame);gl.viewport(0,0,this.ssize,this.ssize);gl.enable(gl.DEPTH_TEST);gl.clearColor(1,1,1,1);gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);gl.useProgram(this.depth);gl.uniformMatrix4fv(this.di.vp,false,this.lightVP);this.draw(this.local,this.di);this.sceneDirty=false}
    const reflectOn=this.reflections();gl.bindFramebuffer(gl.FRAMEBUFFER,null);gl.viewport(0,0,this.canvas.width,this.canvas.height);gl.clear(gl.DEPTH_BUFFER_BIT);gl.disable(gl.DEPTH_TEST);gl.useProgram(this.sky);const s=this.si;this.common(s);gl.uniform3fv(s.camForward,this.forward);gl.uniform3fv(s.camRight,this.right);gl.uniform3fv(s.camUp,this.up);gl.uniform1f(s.tanHalf,this.tanHalf);gl.uniform1f(s.aspect,this.aspect);gl.bindBuffer(gl.ARRAY_BUFFER,this.full);gl.enableVertexAttribArray(s.pos);gl.vertexAttribPointer(s.pos,2,gl.FLOAT,false,0,0);gl.drawArrays(gl.TRIANGLES,0,3);gl.disableVertexAttribArray(s.pos);
    gl.enable(gl.DEPTH_TEST);gl.useProgram(this.main);const i=this.mi;this.common(i);gl.uniformMatrix4fv(i.vp,false,this.vp);gl.uniformMatrix4fv(i.lightVP,false,this.lightVP);gl.uniform3fv(i.eye,this.eye);gl.uniform1f(i.handPass,0);gl.uniform1f(i.reflectReady,reflectOn?1:0);gl.uniform1f(i.captureFloor,0);gl.uniform2f(i.viewSize,this.canvas.width,this.canvas.height);for(const [j,name] of ['glassBack','glassSide','woodFloor'].entries()){gl.activeTexture(gl.TEXTURE1+j);gl.bindTexture(gl.TEXTURE_2D,reflectOn?this.refBuffers[j].tex:this.shadow);gl.uniform1i(i[name],j+1)}gl.uniform1f(i.shadowOn,this.hasShadow?1:0);gl.activeTexture(gl.TEXTURE0);gl.bindTexture(gl.TEXTURE_2D,this.shadow);gl.uniform1i(i.shadowTex,0);
-   if(!this.farm){gl.uniformMatrix4fv(i.vp,false,this.cityVP);this.draw(this.staticMeshes[0],i);gl.clear(gl.DEPTH_BUFFER_BIT);gl.uniformMatrix4fv(i.vp,false,this.vp)}this.draw(this.local,i);gl.enable(gl.BLEND);gl.blendFunc(gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA);gl.depthMask(false);for(const m of this.glassMeshes)this.draw(m,i);gl.depthMask(true);gl.disable(gl.BLEND);
+   if(!this.farm){gl.uniformMatrix4fv(i.vp,false,this.cityVP);this.draw(this.staticMeshes[0],i);gl.clear(gl.DEPTH_BUFFER_BIT);gl.uniformMatrix4fv(i.vp,false,this.vp)}this.draw(this.local,i);this.draw(this.screenMesh,i);gl.enable(gl.BLEND);gl.blendFunc(gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA);gl.depthMask(false);for(const m of this.glassMeshes)this.draw(m,i);gl.depthMask(true);gl.disable(gl.BLEND);
    if(this.effect&&this.actionMesh){if(performance.now()-this.effect.start<this.effect.length){gl.clear(gl.DEPTH_BUFFER_BIT);gl.uniform1f(i.handPass,1);gl.uniformMatrix4fv(i.handTransform,false,handMatrix(this,this.effect));this.draw(this.actionMesh,i);gl.uniform1f(i.handPass,0)}else{gl.deleteBuffer(this.actionMesh.buffer);this.actionMesh=null;this.effect=null}}
    this.dirty=false;return true
  }
@@ -579,20 +655,165 @@ function handMatrix(r,e){
 }
 function performAction(name,crop){
  closeDialog();soundscape.cue(name);
- if(renderer&&!renderer.isSoftware){
-   const g=new Geometry(22);buildHandProp(g,name,crop);if(name==='water')for(let j=0;j<48;j++)g.ball(-.20+g.rand()*.023,.056+g.rand()*.018,-.083+j*.0009,.0037,.013,.0037,'#89b8ca',{mat:'droplet',glow:.30});const gl=renderer.gl;
-   if(renderer.actionMesh)gl.deleteBuffer(renderer.actionMesh.buffer);
-   renderer.actionMesh=renderer.mesh(g.data);renderer.effect={action:name,start:performance.now(),length:name==='water'?1700:1250};renderer.dirty=true
+ if(renderer){
+   const g=new Geometry(22);buildHandProp(g,name,crop);if(name==='water')for(let j=0;j<48;j++)g.ball(-.20+g.rand()*.023,.056+g.rand()*.018,-.083+j*.0009,.0037,.013,.0037,'#89b8ca',{mat:'droplet',glow:.30});if(renderer.isSoftware)renderer.actionMesh=g.data.packed();
+   else {if(renderer.actionMesh)renderer.gl.deleteBuffer(renderer.actionMesh.buffer);renderer.actionMesh=renderer.mesh(g.data)}
+   renderer.effect={action:name,start:performance.now(),length:name==='water'?1700:1250};renderer.dirty=true
  }
 }
 
+
+
+// Instrument panels use curved surfaces. Their type, charts and key legends
+// are vector meshes in the world, so their edges stay sharp at close range.
+const DRAW_GLYPHS={
+ A:'6128 35',B:'602543 3586',C:'2068',D:'601586',E:'2068 34',F:'602 34',
+ G:'20685 54',H:'06 28 35',I:'02 17 68',J:'2856',K:'06 32 38',L:'068',
+ M:'60128',N:'6082',O:'02680',P:'60253',Q:'02680 48',R:'60253 48',S:'203586',
+ T:'02 17',U:'0682',V:'072',W:'06482',X:'08 26',Y:'042 47',Z:'0268',
+ '0':'02680','1':'147 68','2':'025368','3':'02586 35','4':'035 28','5':'203586',
+ '6':'036853','7':'027','8':'02680 35','9':'53028','/':'26','.':'77','-':'35','+':'35 17',':':'11 77',' ':''
+};
+function vectorLabel(g,project,txt,x,y,h,color,finish={}){
+ const width=h*.61,weight=h*.070;
+ for(const ch of String(txt).toUpperCase()){
+   for(const path of (DRAW_GLYPHS[ch]||'').split(' '))for(let j=1;j<path.length;j++){
+     const a=Number(path[j-1]),b=Number(path[j]),ax=x+a%3*width*.5,ay=y-Math.floor(a/3)*h*.5,
+       bx=x+b%3*width*.5,by=y-Math.floor(b/3)*h*.5,dx=bx-ax,dy=by-ay,len=Math.hypot(dx,dy);
+     const u=len?-dy/len*weight:weight,v=len?dx/len*weight:0;
+     if(len)g.quad(project(ax-u,ay-v),project(bx-u,by-v),project(bx+u,by+v),project(ax+u,ay+v),color,finish);
+     else g.quad(project(ax-weight,ay-weight),project(ax+weight,ay-weight),project(ax+weight,ay+weight),project(ax-weight,ay+weight),color,finish);
+   }
+   x+=width+h*.22
+ }
+}
+const terminalPanels=[
+ {x:3.18,y:1.38,z:-3.60,angle:.113,stock:0},
+ {x:4.30,y:1.38,z:-3.61,angle:-.155,stock:2}
+];
+function panelPoint(panel,x,y,depth){
+ const a=panel.angle+x/1.8,base=panel.angle,dx=1.8*(Math.sin(a)-Math.sin(base)),dz=1.8*(Math.cos(base)-Math.cos(a));
+ return [panel.x+dx-Math.sin(a)*depth,panel.y+y,panel.z+dz+Math.cos(a)*depth]
+}
+function buildPanelContent(g,stocks){
+ const bg={mat:'screen',glow:.34},ink={glow:.77},light='#c4d0c7',teal='#72cbb3',rust='#e19b86';
+ for(const panel of terminalPanels){
+   const q=stocks[panel.stock],history=q.history,main=Number(panel.stock===0);
+   const P=(x,y)=>panelPoint(panel,x,y,.004);
+   const face=(x,y,w,h,color,d=.005)=>{const spans=Math.max(1,Math.ceil(w/.035)),f=(u,v)=>panelPoint(panel,u,v,d);for(let j=0;j<spans;j++){const a=x+w*j/spans,b=x+w*(j+1)/spans;g.quad(f(a,y),f(b,y),f(b,y+h),f(a,y+h),color,ink)}};
+   const txt=(t,x,y,h,color=light)=>vectorLabel(g,(a,b)=>panelPoint(panel,a,b,.007),t,x,y,h,color,ink);
+   for(let j=0;j<38;j++){const x=-.526+j*1.052/38,k=x+1.052/38;g.quad(P(x,-.231),P(k,-.231),P(k,.231),P(x,.231),'#09141c',bg)}
+   txt(main?'AXM / AXIOM SYSTEMS':'NVA / NOVA LABS',-.496,.204,.018);
+   txt(q.price.toFixed(2),-.490,.159,.030,teal);
+   txt('EASTBANK   EXCHANGE',.157,.204,.0103);
+   txt('SESSION',-.295,.145,.010);txt('VOLUME',-.496,-.150,.0078);
+   const x0=-.486,x1=.141,y0=-.117,y1=.094,w=x1-x0,h=y1-y0;
+   // Map adjacent quotes to a candle body and show the running mean underneath.
+   for(let k=0;k<=4;k++)face(x0,y0+k*h/4,w,.00085,'#293d45',.0048);
+   for(let k=0;k<8;k++)face(x0+w*k/8,y0,.0007,h,'#24353e',.0048);
+   const lo=Math.min(...history),hi=Math.max(...history),norm=v=>y0+.012+(v-lo)/Math.max(.04,hi-lo)*(h-.024);
+   let lastMean=null;
+   for(let j=1;j<history.length;j++){
+     const x=x0+(j-.50)*w/(history.length-1),prev=history[j-1],cur=history[j],v0=norm(prev),v1=norm(cur),color=cur>=prev?teal:rust,unit=w/(history.length-1);
+     face(x-.0008,Math.min(v0,v1)-.006,.0016,Math.abs(v1-v0)+.012,color,.0054);
+     face(x-unit*.28,Math.min(v0,v1),unit*.56,Math.max(.003,Math.abs(v1-v0)),color,.0061);
+     face(x-unit*.30,-.208,unit*.6,.004+.03*Math.min(1,Math.abs(cur-prev)/Math.max(.1,(hi-lo)/7)),color,.006);
+     const line=[x,norm(history.slice(Math.max(0,j-5),j+1).reduce((a,b)=>a+b,0)/Math.min(6,j+1))];
+     if(lastMean){const [x0,y0]=lastMean;g.quad(panelPoint(panel,x0,y0-.0007,.0071),panelPoint(panel,line[0],line[1]-.0007,.0071),panelPoint(panel,line[0],line[1]+.0007,.0071),panelPoint(panel,x0,y0+.0007,.0071),'#cda66b',ink)}lastMean=line;
+   }
+   face(.158,-.206,.001,.366,'#45515a',.005);
+   txt('ORDER BOOK',.181,.147,.013);txt('BID',.185,.113,.010,teal);txt('ASK',.357,.113,.010,rust);
+   for(let j=0;j<10;j++){const py=.083-j*.027;
+     face(.18,py-.011,.046+.055*(.5+.5*Math.sin(1+j*3.73)),.014,'#18322f',.005);
+     face(.347,py-.011,.055+.052*(.5+.5*Math.sin(2+j*2.18)),.014,'#382a2c',.005);
+     txt((q.price-.02*j-.01).toFixed(2),.184,py,.011,teal);txt((q.price+.02*j+.01).toFixed(2),.356,py,.011,rust)
+   }
+ }
+}
+function buildWorkstation(g,deskTop){
+ const metal={mat:'metal'},poly={mat:'plain'},rubber='#28292a',alloy='#555e62';
+ const wire=(points,r,col)=>{for(let i=1;i<points.length;i++)g.beam(points[i-1],points[i],r,col,poly)};
+ const curve=(a,b,c,d)=>Array.from({length:21},(_,k)=>{const t=k/20,s=1-t;return a.map((x,i)=>s*s*s*x+3*s*s*t*b[i]+3*s*t*t*c[i]+t*t*t*d[i])});
+ for(const [i,p] of terminalPanels.entries()){
+   const xy=(x,y,z)=>panelPoint(p,x,y,z);
+   const width=1.075,height=.484;
+   for(let j=0;j<40;j++){
+     const x=(j/40-.5)*width,k=x+width/40;
+     for(const [y,t] of [[-height/2,-.231],[.231,height/2]])g.quad(xy(x,y,0),xy(k,y,0),xy(k,t,0),xy(x,t,0),'#252729',metal);
+     g.quad(xy(x,-height/2,-.034),xy(x,height/2,-.034),xy(k,height/2,-.034),xy(k,-height/2,-.034),'#383c3d',metal);
+     for(const y of [-height/2,height/2])g.quad(xy(x,y,0),xy(x,y,-.034),xy(k,y,-.034),xy(k,y,0),alloy,metal)
+   }
+   for(const [x,k] of [[-.5375,-.525],[.525,.5375]]){
+     g.quad(xy(x,-height/2,0),xy(k,-height/2,0),xy(k,height/2,0),xy(x,height/2,0),rubber,metal);
+     const e=x<0?x:k;g.quad(xy(e,-height/2,0),xy(e,height/2,0),xy(e,height/2,-.034),xy(e,-height/2,-.034),alloy,metal)
+   }
+   let px=p.x+(i?-.28:.28),pivot=[px,1.025,-3.82],elbow=[p.x+.12,1.16,-3.91],end=[p.x,1.38,-3.67];
+   g.roundBox(px,deskTop+.024,-3.83,.15,.048,.16,.012,alloy,metal);
+   g.cyl(px,.932,-3.82,.025,.031,.223,20,alloy,metal);
+   for(const delta of [-.027,.027]){g.beam([pivot[0]+delta,pivot[1],pivot[2]],[elbow[0]+delta,elbow[1],elbow[2]],.019,alloy,metal);g.beam([elbow[0]+delta,elbow[1],elbow[2]],[end[0]+delta,end[1],end[2]],.020,'#42494d',metal)}
+   for(const joint of [pivot,elbow,end])g.cyl(...joint,.039,.039,.085,18,'#63686b',{mat:'metal',rz:Math.PI/2});
+   g.roundBox(p.x,p.y,-3.663,.166,.144,.037,.012,rubber,metal);
+   wire(curve([p.x-.08,1.30,-3.665],[p.x-.12,1.06,-3.77],[px,.98,-3.80],[px,deskTop+.01,-3.93]),.0042,'#202225');
+   for(let j=0;j<31;j++){const x=(j-15)*.017;g.quad(xy(x,.157,-.0355),xy(x+.007,.157,-.0355),xy(x+.007,.180,-.0355),xy(x,.180,-.0355),'#1e2325',poly)}
+   const led=xy(.477,-.237,.001);g.ball(...led,.005,.002,.002,'#89d2b8',{glow:.84});
+ }
+ g.roundBox(3.72,deskTop+.006,-3.015,1.27,.012,.47,.005,'#404640',{mat:'leather'});
+ // Model a compact keyboard with staggered rows and dished double-shot keycaps.
+ const kx=3.51,kz=-2.995,pitch=.0218;
+ g.roundBox(kx,.826,kz,.412,.029,.141,.010,'#5e6263',metal);
+ g.roundBox(kx,.843,kz,.397,.011,.131,.004,'#252727',poly);
+ function key(x,z,w,row,label,accent=false){
+   const low=.846,high=.857+(4-row)*.001;
+   const b=[[-w/2,-.010],[w/2,-.010],[w/2,.010],[-w/2,.010]],t=b.map(([a,c])=>[a*(1-.0036/w),c*.78]);
+   for(let i=0;i<4;i++){const k=(i+1)%4;g.quad([x+b[i][0],low,z+b[i][1]],[x+t[i][0],high,z+t[i][1]],[x+t[k][0],high,z+t[k][1]],[x+b[k][0],low,z+b[k][1]],accent?'#806b53':'#454a4b',poly)}
+   const topColor=accent?'#a38c69':'#777b77';
+   // A shallow cylindrical dish catches the light along the two outer rims.
+   for(let j=0;j<4;j++){const u0=j/4,u1=(j+1)/4,cap=(u,v)=>{const dx=t[0][0]+(t[1][0]-t[0][0])*u;return [x+dx,high-.0007*Math.sin(Math.PI*u),z+(v?t[3][1]:t[0][1])]};g.quad(cap(u0,0),cap(u0,1),cap(u1,1),cap(u1,0),topColor,poly)}
+   if(label)vectorLabel(g,(a,c)=>[x+a,high+.00012,z-c],label,-w*.31,.0048,.0054,'#e5e1cc',poly);
+ }
+ const rows=['1234567890-+','QWERTYUIOP','ASDFGHJKL','ZXCVBNM'];
+ rows.forEach((labels,r)=>{const z=kz-.048+r*pitch;let x=kx-.171+(r===1?.012:r===2?.019:r===3?.030:0);
+   for(const ch of labels){key(x,z,.0195,r,ch,r===0&&ch==='1');x+=pitch}key(x+.012,z,.044,r,'')});
+ for(const [dx,w] of [[-.166,.026],[-.135,.024],[-.105,.026],[-.020,.133],[.068,.028],[.101,.027]])key(kx+dx,kz+.040,w,4,'');
+ for(const [u,v] of [[0,0],[1,0],[2,0],[1,-1]])key(kx+.131+u*.022,kz+.040+v*.022,.019,4,'');
+ wire(curve([kx+.128,.831,kz-.069],[3.73,.809,-3.25],[3.94,.806,-3.09],[4.04,.805,-3.76]),.0022,'#292928');
+ // Two separate click shells have a center slot for the rubber scroll wheel.
+ const mx=4.05,mz=-2.975;
+ g.roundBox(mx,.822,mz,.078,.021,.126,.009,'#303233',poly);
+ for(const s of [-1,1])g.surface(12,13,(u,v)=>{const a=(u*.5+.001)*Math.PI,side=Math.sin(a)*s,
+   along=2*v-1,shape=Math.sqrt(Math.max(.0003,1-along*along)),w=.040*shape*(1-.12*along);
+   return [mx+side*w+s*.00085,.828+.031*Math.cos(a)*shape*(1-.30*along),mz+along*.064]},'#747976',poly);
+ g.cyl(mx,.851,mz-.026,.010,.010,.008,18,'#343332',{rz:Math.PI/2});
+ // The open-frame workstation exposes the actual cooling path and card stack.
+ const cx=5.01,cz=-3.62,base=deskTop+.018,wide=.391,deep=.205,tall=.445,front=cz+deep*.5;
+ g.roundBox(cx,base+.011,cz,wide,.022,deep,.005,'#303436',metal);
+ g.roundBox(cx,base+tall,cz,wide,.022,deep,.005,'#434949',metal);
+ for(const sign of [-1,1])for(const dz of [-1,1])g.box(cx+sign*(wide*.5-.008),base+tall*.5,cz+dz*(deep*.5-.008),.016,tall,.016,alloy,metal);
+ g.roundBox(cx,base+.22,cz-deep*.43,.363,.396,.014,.004,'#263733',poly);
+ g.roundBox(cx-.04,base+.264,cz-.055,.091,.081,.052,.012,'#636965',metal);
+ for(const x of [-.11,-.095,.021,.037])g.box(cx+x,base+.28,cz-.046,.008,.111,.022,'#777872',metal);
+ for(let i=0;i<23;i++)g.box(cx-.045+(i%5)*.014,base+.16+Math.floor(i/5)*.017,cz-.067,.008,.006,.008,i%3?'#666963':'#b5a58b',metal);
+ g.box(cx-.01,base+.13,cz,.317,.050,.091,'#32383c',metal);
+ for(let k=0;k<39;k++)g.box(cx-.15+k*.0075,base+.129,cz+.052,.002,.035,.023,'#8a918e',metal);
+ function fan(x,y,z,r){
+   for(let i=0;i<7;i++){const a=i*Math.PI*2/7;const P=(t,rad,dz)=>[x+rad*Math.cos(a+t),y+rad*Math.sin(a+t),z+dz];
+     g.quad(P(0,r*.26,0),P(.13,r*.90,-.005),P(.56,r*.96,-.002),P(.52,r*.40,.004),'#535d5d',metal)}
+   g.cyl(x,y,z+.003,r*.235,r*.235,.009,18,'#687374',{mat:'metal',rx:Math.PI/2});
+   for(let i=0;i<36;i++){const a=i*Math.PI/18,b=(i+1)*Math.PI/18;g.beam([x+r*Math.cos(a),y+r*Math.sin(a),z],[x+r*Math.cos(b),y+r*Math.sin(b),z],.0016,'#98b8a5',{glow:.36})}
+ }
+ fan(cx+.089,base+.318,front-.028,.058);fan(cx+.089,base+.195,front-.028,.058);
+ for(const x of [-.029,-.048])wire(curve([cx+x,base+.30,cz-.03],[cx-.16,base+.45,front],[cx+.01,base+.427,front],[cx+.055,base+.39,front-.028]),.0052,'#303335');
+ g.quad([cx-wide/2+.013,base+.018,front],[cx+wide/2-.013,base+.018,front],[cx+wide/2-.013,base+tall-.015,front],[cx-wide/2+.013,base+tall-.015,front],'#a8b4bc',{mat:'glass'});
+ for(const sx of [-1,1])for(const sy of [.029,tall-.03])g.cyl(cx+sx*.173,base+sy,front+.001,.004,.004,.004,12,'#9b9c96',{mat:'metal',rx:Math.PI/2});
+}
 
 
 /* View-space models. The right wrist enters from below and behind the tool. */
 function buildHandProp(g,action,crop) {
   const tau=2*Math.PI;
   const metal={mat:"metal"},brass={mat:"brass"},hide={mat:"leather"},cloth={mat:"fabric"};
-  const surf=(rows,cols,f,color,material)=>g.surface(rows,cols,f,color,material);
+  // Keep UV derivatives defined at the tips of revolved and spherical surfaces.
+  const surf=(rows,cols,f,color,material)=>g.surface(rows,cols,(u,v)=>f(u,Math.max(.00001,Math.min(.99999,v))),color,material);
   const add=(a,b,k=1)=>a.map((p,i)=>p+b[i]*k);
   const sub=(a,b)=>a.map((p,i)=>p-b[i]);
   const cross=(a,b)=>[a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]];
@@ -624,27 +845,153 @@ function buildHandProp(g,action,crop) {
       return [x+rx*Math.cos(tau*u)*cb,y+ry*Math.sin(b),z+rz*Math.sin(tau*u)*cb];
     },color,mat);
   }
-  function glove(x,y,z,scale=1){
-    const pt=(a,b,c)=>[x+a*scale,y+b*scale,z+c*scale],radii=a=>a.map(n=>n*scale);
-    tube([pt(.020,-.026,.031),pt(.039,-.046,.052),pt(.074,-.071,.097),pt(.099,-.085,.131)],
-      radii([.035,.033,.039,.043]),"#565c52",cloth,14,.87);
-    tube([pt(.010,-.012,.024),pt(.023,-.029,.040),pt(.042,-.044,.061)],
-      radii([.036,.037,.035]),"#82725c",cloth,14,.85);
-    tube([pt(.037,-.042,.055),pt(.039,-.044,.058)],radii([.0355,.0355]),"#aa9780",cloth,14,.85);
-    patch(...pt(.002,0,.009),.040*scale,.043*scale,.024*scale,"#9a7959",hide);
-    // The fingers flex toward the palm, with separate fingertips around the shaft.
-    for(let i=0;i<4;i++){
-      const localY=.028-i*.0145,short=i===3?.008:0;
-      const finger=[pt(-.008,localY,.011),pt(-.025+short,localY+.002,.008),
-        pt(-.035+short,localY,-.004),pt(-.034+short,localY-.002,-.018),pt(-.023+short,localY-.004,-.023)];
-      tube(finger,radii([.0087,.0095,.0091,.0082,.0045]),i===3?"#947459":"#a48565",hide,8);
-      tube([pt(-.022+short,localY+.008,.012),pt(-.028+short,localY+.005,.007)],
-        radii([.0009,.0006]),"#705c49",hide,5);
+  // Interpolate the longitudinal rings of an articulated digit. A transported
+  // frame follows each turn without twisting the stitch line across the finger.
+  function spline(points,t) {
+    const s=Math.max(0,Math.min(1,t))*(points.length-1), i=Math.min(points.length-2,Math.floor(s));
+    const a=points[Math.max(i-1,0)], b=points[i], c=points[i+1], d=points[Math.min(i+2,points.length-1)];
+    const f=s-i,f2=f*f,f3=f2*f;
+    return b.map((v,k)=>.5*((2*v)+(-a[k]+c[k])*f+(2*a[k]-5*v+4*c[k]-d[k])*f2+(-a[k]+3*v-3*c[k]+d[k])*f3));
+  }
+  const dot=(a,b)=>a.reduce((s,n,i)=>s+n*b[i],0);
+  function fingerSurface(points,radii,depths,reference) {
+    const sections=(points.length-1)*3, rings=[];
+    for(let k=0;k<=sections;k++){
+      const t=k/sections, center=spline(points,t);
+      const axis=unit(sub(spline(points,t+.002),spline(points,t-.002)));
+      const last=k?rings[k-1].side:reference;
+      const side=unit(add(last,axis,-dot(axis,last))), back=cross(side,axis);
+      rings.push({center,side,back,width:Math.max(.00015,spline(radii.map(n=>[n]),t)[0]),height:Math.max(.00015,spline(depths.map(n=>[n]),t)[0])});
     }
-    const thumb=[pt(.021,.021,.016),pt(.005,.038,.013),pt(-.013,.039,.004),pt(-.021,.030,-.008)];
-    tube(thumb,radii([.013,.012,.010,.006]),"#a6896b",hide,10);
-    tube([pt(.021,-.022,.031),pt(.016,-.003,.034),pt(.014,.016,.032)],
-      radii([.001,.001,.0008]),"#c3a78a",hide,5);
+    return (u,v,outset=0)=>{
+      const d=Math.min(sections,Math.max(0,v*sections)),a=Math.min(sections-1,Math.floor(d)),frac=d-a;
+      const theta=u*tau,ca=Math.cos(theta),si=Math.sin(theta);
+      const point=row=>add(add(row.center,row.side,(row.width+outset)*ca),row.back,(row.height+outset)*si);
+      return frac===0?point(rings[a]):line(point(rings[a]),point(rings[a+1]),frac);
+    };
+  }
+  function glove(center,axis,face,objectRadius,shape='grip'){
+    const scale=shape==='cup'?.89:1;
+    const Y=unit(axis), X=unit(cross(Y,face)), Z=cross(X,Y);
+    const pos=p=>add(add(add(center,X,p[0]*scale),Y,p[1]*scale),Z,p[2]*scale);
+    const r=objectRadius/scale;
+    const ochre='#a07f5f', shaded='#82684e', thread='#b79b77';
+    function skinSurface(rows,cols,fn,color,mat=hide){surf(rows,cols,(u,v)=>pos(fn(u,v)),color,mat)}
+    function cord(points,width,color,mat=hide,n=5){
+      if(points.length>1)tube(points.map(pos),points.map(()=>width*scale),color,mat,n);
+    }
+    function stitch(fn,count,start=0,end=1){
+      for(let k=0;k<count;k++){
+        const a=lerp(start,end,(k+.12)/count),b=lerp(start,end,(k+.69)/count);
+        cord([fn(a),fn(b)],.00045,thread,cloth,4);
+      }
+    }
+    // The heel narrows into the wrist, while the radial side rises into the
+    // thumb pad. Its broad back carries one continuous goatskin reinforcement.
+    const palmRings=[
+      [r+.068,-.034,.023+r*.26,.018,.012], [r+.058,-.030,.020+r*.30,.027,.016],
+      [r+.046,-.022,.018+r*.36,.033,.0183],[r+.030,-.014,.016+r*.50,.038,.0195],
+      [r+.011,-.005,.014+r*.70,.040,.0165],[r-.001,.000,.012+r*.86,.035,.0121],
+      [r-.007,.001,.010+r*.92,.023,.0065]
+    ];
+    const signedPow=(n,k)=>Math.sign(n)*Math.pow(Math.abs(n),k);
+    function palmPoint(a,t,offset=0){
+      const [x,y,z,w,h]=spline(palmRings,t), co=Math.cos(a),si=Math.sin(a);
+      return [x,y+(w+offset)*signedPow(co,.86),z+(h+offset)*signedPow(si,.77)+.0035*co*Math.sin(t*Math.PI)];
+    }
+    skinSurface(20,28,(u,v)=>palmPoint(tau*u,v),ochre);
+    const panelUV=(u,v)=>{
+      const edge=Math.pow(Math.abs(2*u-1),2.3), start=.095+.12*edge, end=.895-.15*edge;
+      return palmPoint(.27+u*2.56,lerp(start,end,v),.00105);
+    };
+    skinSurface(12,18,panelUV,'#ac8e6c');
+    for(const u of [.025,.975])stitch(t=>add(panelUV(u,t),[0,0,.00032]),11);
+    stitch(t=>add(panelUV(t,.975),[0,0,.00032]),14);
+    // Tendons and wear wrinkles below each metacarpal are stitched embossing,
+    // kept low so the back of the glove still reads as one supple surface.
+    for(let i=0;i<3;i++){
+      const u=.22+i*.25, ridge=t=>add(panelUV(u+.032*Math.sin(t*Math.PI),.28+t*.54),[0,0,.0006]);
+      cord([ridge(0),ridge(.31),ridge(.67),ridge(1)],.00076,'#b39672');
+    }
+    // The spread, finger lengths and curl all change with the object diameter.
+    // On a heavy tomato the palm opens and the pads stop along the fruit's side.
+    const fingers=[
+      {y:.0285,size:.0093,len:1,tilt:-.0045},{y:.0102,size:.0097,len:1.08,tilt:-.0016},
+      {y:-.0089,size:.0092,len:1,tilt:.0021},{y:-.0260,size:.0078,len:.78,tilt:.0055}
+    ];
+    fingers.forEach(({y,size,len,tilt},i)=>{
+      const cup=shape==='fruit', jointRadius=cup?r*Math.sqrt(Math.max(.45,1-(y/(r*1.22))**2)):r;
+      const a=jointRadius+size*.88;
+      const terminal=cup?3.00+i*.036:4.57-i*.09;
+      const ring=(angle,h,extra=0)=>[(a+extra)*Math.cos(angle),h,(a+extra)*Math.sin(angle)];
+      const knuckle=[r+.007-(i===3?.002:0),y,.016+r*.90];
+      const pip=ring(2.22-i*.035,y+tilt*.28,.0069*len);
+      const dip=ring(lerp(2.22,terminal,.59),y+tilt*.77,.0016*len);
+      const tip=ring(terminal,y+tilt,.0001);
+      const close=add(tip,unit(sub(tip,dip)),.0047);
+      const pts=[knuckle,line(knuckle,pip,.37),pip,line(pip,dip,.47),dip,line(dip,tip,.52),tip,close];
+      const widths=[1.02,1.05,1.15,1.01,.98,.89,.85,.025].map(x=>size*x);
+      const depths=[.96,.93,1.02,.86,.84,.77,.65,.023].map(x=>size*x);
+      const surface=fingerSurface(pts,widths,depths,[0,1,0]);
+      skinSurface((pts.length-1)*3,16,surface,i===3?'#9b7d60':'#aa8969');
+      // Dorsal guard over the distal phalanx follows the actual roll of
+      // the fingertip, like the nail beneath it. Individual forked seams
+      // gather the leather behind both the middle and distal joint.
+      const cap=(u,v)=>surface(.49+u*.53,lerp(.63+.045*Math.abs(2*u-1),.84-.028*Math.abs(2*u-1),v),.00064);
+      skinSurface(5,8,cap,'#b29675');
+      for(const boundary of [.32,.57]){
+        const pts=[];
+        for(let k=0;k<=6;k++)pts.push(surface(.50+k*.076,boundary+.022*Math.sin(k*Math.PI/6),.00047));
+        cord(pts,.00066,'#80684f');
+      }
+      // Outer gusset visible along the little finger and index.
+      if(i===0||i===3){
+        const side=i===0?.035:.47;
+        const piping=t=>surface(side,.14+t*.67,.00072);
+        const seam=[];for(let k=0;k<=15;k++)seam.push(piping(k/15));
+        cord(seam,.0008,shaded);stitch(t=>surface(side+.035,.14+t*.67,.00080),8);
+      }
+    });
+    // Thenar web and thumb overlap the index in opposition. The thumb points
+    // diagonally around the far side of the handle, not parallel to the fingers.
+    const thumbPts=[
+      [r+.044,.000,.010+r*.25],[r+.039,.018,.005+r*.25],[r+.024,.036,.003+r*.19],
+      [r+.011,.045,-.004-r*.14],[r-.007,.045,-.008-r*.39],
+      [r-.018,.037,-.008-r*.59],[r-.025,.031,-.004-r*.65],[r-.028,.028,-.002-r*.65]
+    ];
+    const thumb=fingerSurface(thumbPts,[.017,.017,.0158,.0137,.012,.0111,.0092,.0004],[.012,.014,.014,.012,.0103,.0094,.0077,.0003],[0,0,1]);
+    skinSurface(21,20,thumb,'#a58767');
+    const pad=(u,v)=>thumb(.068+u*.41,lerp(.18+.045*Math.abs(2*u-1),.83-.095*Math.abs(2*u-1),v),.00074);
+    skinSurface(10,11,pad,'#917355');
+    for(const u of [.025,.975])stitch(t=>pad(u,t),8);
+    // A separate curved gusset joins the thumb saddle to the back panel.
+    const crotch=t=>palmPoint(.47+1.04*t,.17+.31*t,.0018);
+    const welt=[];for(let k=0;k<=10;k++)welt.push(crotch(k/10));
+    cord(welt,.00115,shaded);
+    // A shaped gauntlet and jacket continue to the bottom of the screen.
+    // Wrist geometry points inward from the elbow even when the tool is tilted.
+    const wrist=pos(palmRings[1].slice(0,3)),armEnd=add(wrist,[.245,-.26,.34]);
+    const armDir=unit(sub(armEnd,wrist)),armSide=unit(cross(armDir,[0,0,1])),armUp=cross(armSide,armDir);
+    const armAt=(s,u,ry,rz,wrinkle=0)=>{
+      const a=u*tau,warped=1+wrinkle*(Math.cos(a*7+s*38)+.48*Math.cos(a*11-s*45));
+      const base=add(wrist,armDir,s);
+      return add(add(base,armSide,ry*warped*Math.cos(a)),armUp,rz*warped*Math.sin(a));
+    };
+    surf(24,26,(u,v)=>{
+      const s=.027+.375*v,crease=.003*Math.sin(v*13)*Math.exp(-v*3);
+      return armAt(s,u,lerp(.036,.065,v)+crease,lerp(.030,.052,v)+crease,.045);
+    },'#515953',{mat:'fabric'});
+    for(const h of [.043,.070,.096]){
+      surf(4,26,(u,v)=>armAt(h+.008*v+.003*Math.sin(tau*u),u,.038+.004*Math.sin(v*Math.PI),.033+.0026*Math.sin(v*Math.PI),.043),'#5f655b',cloth);
+    }
+    const cuffProfile=[[-.010,.028,.022],[.001,.034,.027],[.017,.037,.031],[.039,.039,.034],[.046,.041,.035],[.049,.039,.034]];
+    surf(14,30,(u,v)=>{const [s,w,d]=spline(cuffProfile,v);return armAt(s,u,w,d,.019);},'#7c7462',cloth);
+    for(const offset of [0,.005]){
+      surf(3,32,(u,v)=>armAt(.036+offset+.0016*v,u,.0405,.035,.019),'#beaa88',cloth);
+    }
+    const seam=[];
+    for(let i=0;i<=11;i++)seam.push(armAt(.055+.30*i/11,.22,.038+.022*i/11,.033+.015*i/11,.025));
+    tube(seam,seam.map(()=>.0013),'#747b6e',cloth,5);
   }
   function wateringCan(){
     // The body is a rolled, elliptical sheet with a crimp underneath the base.
@@ -679,11 +1026,23 @@ function buildHandProp(g,action,crop) {
     const arch=t=>[.008-.091*Math.cos(Math.PI*t),.055+.100*Math.sin(Math.PI*t),.001];
     const handle=[];
     for(let i=0;i<=18;i++)handle.push(arch(i/18));
-    tube(handle,handle.map(()=>.0054),"#919e95",metal,8,1.48);
+    tube(handle,handle.map(()=>.0054),"#919e95",metal,16,1.48);
     const back=[[.086,.040,.004],[.115,.056,.004],[.140,.043,.004],[.149,.018,.004],
       [.141,-.009,.004],[.112,-.039,.004],[.086,-.042,.004]];
-    tube(back,[.006,.007,.007,.007,.007,.007,.005],"#929d93",metal,8,1.2);
-    glove(.161,.001,.010,.86);
+    const curved=Array.from({length:39},(_,i)=>spline(back,i/38));
+    tube(curved,curved.map(()=>.0073),"#929d93",metal,16,1.2);
+    // Riveted handle lugs and a rawhide jacket protect the cool metal strap.
+    for(const [yy,zz] of [[.04,.004],[-.042,.004]]) {
+      patch(.087,yy,zz,.0035,.012,.012,'#7a857e',metal);
+      patch(.091,yy,zz,.002,.004,.004,'#b9b7a1',metal);
+    }
+    const grip=curved.slice(12,26);
+    tube(grip,grip.map((_,i)=>.0088+.0006*Math.sin(Math.PI*i/(grip.length-1))),'#6f5646',hide,16,1.12);
+    // Lapped side seam and tiny rounded heads catch the rim light.
+    const lap=[[-.005,-.058,.065],[-.005,-.027,.069],[-.005,.015,.071],[-.005,.050,.072]];
+    tube(lap,[.0014,.0015,.0014,.0012],'#929e93',metal,8);
+    for(let i=0;i<4;i++){const h=-.048+i*.028;patch(-.005,h,.068+(h+.048)*.055,.0022,.0022,.0011,'#bbc2b6',metal);}
+    glove([.145,.012,.004],[-.10,.99,0],[0,0,1],.009,'grip');
   }
   function trowel(){
     const pivot=[-.036,.017,-.031],ax=unit([-.72,.55,-.39]),across=unit(cross(ax,[0,0,1])),up=cross(across,ax);
@@ -714,14 +1073,25 @@ function buildHandProp(g,action,crop) {
       const pos=blade(.34+.30*(.5+.5*Math.sin(i*5.4)),.39+.25*(.5+.5*Math.cos(i*1.71)),.0012);
       const r=.0016+(i%3)*.00065;patch(...pos,r,r*.43,r*.71,"#796e58",{mat:"stone"});
     }
-    glove(.053,-.040,.022,1);
+    // Turned grip with an aged ferrule, lanyard eye and the shallow shoulder
+    // left where the blade was pressed around its forged center rib.
+    for(const u of [-.126,-.121,-.042]){
+      tube([path(u-.001),path(u),path(u+.001)],[.0156,.016,.0155],'#76583e',{mat:'walnut'},22);
+    }
+    tube([path(-.029),path(-.028),path(-.026)],[.0132,.0142,.0136],'#b3a88a',brass,22);
+    for(const v of [-.146,-.143])patch(...p(v,0,.002),.0034,.0034,.0026,'#787269',metal);
+    for(const side of [-1,1]){
+      const ribs=[];for(let k=0;k<=9;k++)ribs.push(blade(.5+side*(.014+.033*Math.sin(Math.PI*k/10)),.08+k*.043,.0008));
+      tube(ribs,ribs.map((_,k)=>.0011-.00006*k),'#9fa49b',metal,7);
+    }
+    glove(p(-.085,0,0),ax,[0,0,1],.015,'grip');
   }
   function harvest(){
     const greens=["#557454","#718454","#576d4f"];
     const kind=String(crop||"carrot").toLowerCase();
     if(kind.startsWith("tomat")){
-      for(const [x,y,z,s] of [[-.039,.029,-.026,.048],[.022,.027,.010,.042]]){
-        surf(13,21,(u,v)=>{
+      for(const [x,y,z,s] of [[-.012,.025,-.014,.052]]){
+        surf(24,40,(u,v)=>{
           const phi=(v-.5)*Math.PI,theta=u*tau,lobe=1+.042*Math.cos(theta*6)*(.32+.68*v*v);
           return [x+s*Math.cos(phi)*Math.cos(theta)*lobe,y+s*.84*Math.sin(phi)-s*.15*Math.pow(v,10),
             z+s*Math.cos(phi)*Math.sin(theta)*lobe];
@@ -746,7 +1116,20 @@ function buildHandProp(g,action,crop) {
         const grooves=.0013*Math.cos(tau*u*12)*Math.sin(v*Math.PI)+.0014*Math.cos(v*56)*Math.sin(v*Math.PI);
         const r=shape+grooves+extra;return add(add(add(base,axis,L*v),left,r*Math.cos(u*tau)),front,r*Math.sin(u*tau));
       }
-      surf(32,48,(u,v)=>ear(u,v),"#d2ad65",cloth);
+      surf(32,48,(u,v)=>ear(u,v),"#aa8c4e",{mat:'plain'});
+      // Distinct, slightly offset files of kernels nest in the cob. The kernels
+      // taper near its tip and each carries a flattened, convex outer crown.
+      const kernelColors=['#dbb65c','#e6c16a','#d6aa54','#e9ca7a','#dcaf5a'];
+      for(let row=0;row<18;row++)for(let col=0;col<13;col++){
+        const t=.07+row*.05,a=(col+(row%2)*.15)/13,origin=ear(a,t,.00035);
+        const outward=unit(left.map((n,i)=>n*Math.cos(tau*a)+front[i]*Math.sin(tau*a)));
+        const tangent=unit(cross(axis,outward)),width=(.0063-.0015*t*t)*(.94+.06*Math.sin(row*3+col)),height=.0046;
+        surf(4,9,(u,v)=>{
+          const phi=tau*u,rad=.012+.988*Math.sin(v*Math.PI*.5);
+          const sp=(f,e)=>Math.sign(f)*Math.pow(Math.abs(f),e);
+          return add(add(add(origin,tangent,width*rad*sp(Math.cos(phi),.80)),axis,height*rad*sp(Math.sin(phi),.70)),outward,.0028*(1-Math.pow(rad,2.9)));
+        },kernelColors[(row*7+col*3)%5],{mat:'plain'});
+      }
       for(let j=0;j<4;j++){
         const ang=.11+j*.264;
         surf(16,6,(u,v)=>{
@@ -767,6 +1150,13 @@ function buildHandProp(g,action,crop) {
         }
         tube(path,path.map((_,k)=>k===12?.0008:.0168*Math.pow(1-k/13,.69)*(1+.079*Math.cos(k*2))),
           ["#c4854c","#b87941","#cb8d50"][j],{mat:"plain"},14);
+        // Broken transverse growth scars and a few hair roots interrupt the taper.
+        for(let f=0;f<6;f++){
+          const t=.19+f*.098,base=sample(path,t),rad=.0168*Math.pow(1-t*12/13,.69);
+          const ph=.67+f*1.38+j*.73,curve=[];
+          for(let q=0;q<6;q++){const a=ph+q*.11;curve.push([base[0]+rad*Math.cos(a),base[1]+Math.sin(q*.6)*.0008,base[2]+rad*Math.sin(a)]);}
+          tube(curve,curve.map((_,k)=>.00036+.00030*Math.sin(k*Math.PI/5)),'#98633f',{mat:'plain'},5);
+        }
         for(let k=0;k<4;k++){
           const angle=j*1.7+k*1.48,dx=.035*Math.cos(angle)-.012,dz=.026*Math.sin(angle);
           const tip=[x+dx*1.3,y+.076+(k%2)*.018,z+dz*1.3];
@@ -781,7 +1171,9 @@ function buildHandProp(g,action,crop) {
         }
       }
     }
-    glove(.041,-.019,.035,.98);
+    if(kind.startsWith('tomat'))glove([-.012,.025,-.014],[.05,.22,.97],[.05,-.96,.22],.049,'fruit');
+    else if(kind.startsWith('corn'))glove([-.011,-.029,-.010],[-.45,.84,-.31],[0,0,1],.029,'cob');
+    else glove([-.002,.001,-.015],[-.19,.98,-.06],[0,0,1],.029,'bunch');
   }
   function coffee(){
     const pos=[-.008,.016,-.004],glaze={mat:"ceramic"};
@@ -791,8 +1183,17 @@ function buildHandProp(g,action,crop) {
     revolution(pos,[[.043,.034],[.040,.0345],[.001,.034]],"#46352b",glaze,36);
     const loop=[[.035,.049,-.003],[.061,.052,-.003],[.077,.045,-.003],[.084,.028,-.003],
       [.083,.006,-.003],[.068,-.016,-.003],[.038,-.022,-.003]];
-    tube(loop,[.0071,.0076,.0074,.0074,.0076,.0078,.0077],"#c5bdab",glaze,12);
-    glove(.092,.003,.006,.80);
+    const ceramicHandle=Array.from({length:33},(_,i)=>spline(loop,i/32));
+    tube(ceramicHandle,ceramicHandle.map((_,i)=>.0072+.0016*Math.pow(Math.abs(i/16-1),2)),"#c5bdab",glaze,20,1.1);
+    for(const [x,y,z] of [loop[0],loop.at(-1)])patch(x,y,z,.0097,.010,.0095,'#c5bdab',glaze);
+    // Fine wheel-thrown rim, a darker foot ring and a broken meniscus.
+    revolution(pos,[[.0496,.0530],[.0505,.0538],[.0498,.0545]],'#d3cbbb',glaze,48);
+    revolution(pos,[[.035,-.0554],[.037,-.055],[.038,-.054]],'#aba18c',glaze,44);
+    for(let k=0;k<3;k++){
+      const pts=[];for(let j=0;j<=13;j++){const a=k*2.21+.06+j*.075,r=.0425-.001*Math.sin(j*.24);pts.push([pos[0]+r*Math.cos(a),pos[1]+.0348,pos[2]+r*Math.sin(a)]);}
+      tube(pts,pts.map((_,j)=>.00025+.00032*Math.sin(j*Math.PI/13)),'#9a8060',glaze,5);
+    }
+    glove([.082,.022,-.003],[.045,.999,0],[0,0,1],.0076,'cup');
   }
   if(action==="plant") trowel();
   else if(action==="harvest") harvest();
@@ -807,9 +1208,10 @@ class SoftwareRenderer extends Camera{
  constructor(canvas){super(canvas);this.ctx=canvas.getContext('2d',{alpha:false});this.meshes=[];this.isSoftware=true;this.frameCount=0}
  build(farm,plots,story={}){
    this.farm=farm;this.meshes=[];this.dir=skyDirections(farm);
-   if(!farm){let g=new Geometry(543);buildCity(g);this.meshes.push(new Float32Array(g.data))}
-   let g=new Geometry(farm?43291:183);if(farm)buildFarm(g,plots,story);else buildPenthouse(g);this.meshes.push(new Float32Array(g.data));this.dirty=true
+   if(!farm){let g=new Geometry(543);buildCity(g);this.meshes.push(g.data.packed())}
+   let g=new Geometry(farm?43291:183);if(farm)buildFarm(g,plots,story);else buildPenthouse(g);this.meshes.push(g.data.packed());this.dirty=true
  }
+ updatePanels(stocks){if(this.farm)return;const g=new Geometry(81);buildPanelContent(g,stocks);this.meshes[2]=g.data.packed();this.dirty=true}
  drawTriangle(a,b,c,col,w,h){
    const sx=h/(2*this.tanHalf),ax=w/2+a[0]*sx/a[2],ay=h/2-a[1]*sx/a[2],bx=w/2+b[0]*sx/b[2],by=h/2-b[1]*sx/b[2],cx=w/2+c[0]*sx/c[2],cy=h/2-c[1]*sx/c[2];
    const l=Math.max(0,Math.ceil(Math.min(ax,bx,cx)-.5)),r=Math.min(w-1,Math.floor(Math.max(ax,bx,cx)-.5)),t=Math.max(0,Math.ceil(Math.min(ay,by,cy)-.5)),bt=Math.min(h-1,Math.floor(Math.max(ay,by,cy)-.5));if(l>r||t>bt)return;
@@ -824,15 +1226,20 @@ class SoftwareRenderer extends Camera{
    const top=this.farm?[93,140,163]:[51,75,114],bottom=this.farm?[244,211,155]:[239,169,130];for(let y=0;y<h;y++){const f=bound((1-(F[1]+(1-2*y/h)*this.tanHalf*U[1])*2),0,1);const v=bottom.map((q,i)=>Math.round(top[i]*(1-f)+q*f));this.pixels.fill((0xff000000|v[0]|v[1]<<8|v[2]<<16)>>>0,y*w,(y+1)*w)}
    const toCam=(x,y,z)=>{const a=x-E[0],b=y-E[1],c=z-E[2];return [a*R[0]+c*R[2],a*U[0]+b*U[1]+c*U[2],a*F[0]+b*F[1]+c*F[2]]};
    const near=.065,side=this.tanHalf*this.aspect,vert=this.tanHalf;
-   for(const data of this.meshes)for(let j=0;j<data.length;j+=33){
-     const a=toCam(data[j],data[j+1],data[j+2]),b=toCam(data[j+11],data[j+12],data[j+13]),c=toCam(data[j+22],data[j+23],data[j+24]);if(a[2]<near&&b[2]<near&&c[2]<near)continue;
+   let hand=null;
+   if(this.effect&&this.actionMesh){if(performance.now()-this.effect.start<this.effect.length)hand=handMatrix(this,this.effect);else{this.effect=null;this.actionMesh=null}}
+   const buffers=hand?[...this.meshes,this.actionMesh]:this.meshes;
+   for(const data of buffers){const held=hand&&data===this.actionMesh;if(held)this.zbuf.fill(0);
+   const project=held?(x,y,z)=>toCam(hand[0]*x+hand[4]*y+hand[8]*z+hand[12],hand[1]*x+hand[5]*y+hand[9]*z+hand[13],hand[2]*x+hand[6]*y+hand[10]*z+hand[14]):toCam;
+   for(let j=0;j<data.length;j+=33){
+     const a=project(data[j],data[j+1],data[j+2]),b=project(data[j+11],data[j+12],data[j+13]),c=project(data[j+22],data[j+23],data[j+24]);if(a[2]<near&&b[2]<near&&c[2]<near)continue;
      if(a[0]>side*a[2]&&b[0]>side*b[2]&&c[0]>side*c[2]||a[0]<-side*a[2]&&b[0]<-side*b[2]&&c[0]<-side*c[2]||a[1]>vert*a[2]&&b[1]>vert*b[2]&&c[1]>vert*c[2]||a[1]<-vert*a[2]&&b[1]<-vert*b[2]&&c[1]<-vert*c[2])continue;
-     const n=[data[j+3],data[j+4],data[j+5]],di=Math.max(0,V3.dot(dir,n)),amb=.69+.14*n[1],em=data[j+10],fd=bound(((a[2]+b[2]+c[2])/3-28)/250,0,.55),fog=this.farm?[.75,.79,.74]:[.65,.62,.69];let col=0xff000000;
+     const nx=data[j+3],ny=data[j+4],nz=data[j+5],n=held?[hand[0]*nx+hand[4]*ny+hand[8]*nz,hand[1]*nx+hand[5]*ny+hand[9]*nz,hand[2]*nx+hand[6]*ny+hand[10]*nz]:[nx,ny,nz],di=Math.max(0,V3.dot(dir,n)),amb=.69+.14*n[1],em=data[j+10],fd=bound(((a[2]+b[2]+c[2])/3-28)/250,0,.55),fog=this.farm?[.75,.79,.74]:[.65,.62,.69];let col=0xff000000;
      for(let i=0;i<3;i++){const k=data[j+i+6],v=k*(amb+[.57,.37,.22][i]*di);col|=bound(Math.round(((v*(1-em)+k*1.12*em)*(1-fd)+fog[i]*fd)*255),0,255)<<(i*8)}
      if(a[2]>=near&&b[2]>=near&&c[2]>=near)this.drawTriangle(a,b,c,col,w,h);
      else{const vs=[a,b,c],out=[];for(let k=0;k<3;k++){const p=vs[k],q=vs[(k+1)%3];if(p[2]>=near)out.push(p);if((p[2]>=near)!==(q[2]>=near)){const rat=(near-p[2])/(q[2]-p[2]);out.push([p[0]+(q[0]-p[0])*rat,p[1]+(q[1]-p[1])*rat,near])}}for(let k=1;k<out.length-1;k++)this.drawTriangle(out[0],out[k],out[k+1],col,w,h)}
    }
-   this.ctx.putImageData(this.pic,0,0);this.dirty=false;return true
+   }this.ctx.putImageData(this.pic,0,0);this.dirty=false;return true
  }
 }
 
@@ -866,7 +1273,7 @@ function buildCity(g) {
     ['#b6c1bb','#d2ceaf','#aabcc1','#c3cdc7'],
     ['#cbb49a','#d4ae87','#b5a8a0','#e7c9a3']
   ];
-  const light = {glow:.53}, blind = {glow:.32};
+  const light = {glow:.53}, blind = {glow:.32}, facadeGlass={mat:'facadeGlass'};
   const coldGlass = ['#506375','#495c6f','#465c6c','#617380','#596b76','#526472'];
   const dimGlass = ['#475463','#404d5c','#46535e','#4c545e'];
   const baseBox = (...a) => g.box(...a);
@@ -892,6 +1299,98 @@ function buildCity(g) {
   function madeVisible(e) {
     return -(e.x+e.w*.5*e.ux)*e.nx-(e.z+e.w*.5*e.uz)*e.nz>-4;
   }
+
+  // Local facade coordinates run along an edge and out from its glass line.
+  // Dark backing, window fittings, slab edges and sun fins occupy distinct planes.
+  function atEdge(e,u,y,depth) {
+    return [e.x+e.ux*u+e.nx*depth,y,e.z+e.uz*u+e.nz*depth];
+  }
+  function edgeSolid(e,u,y,width,height,depth,offset,color,material=glassM) {
+    const center=atEdge(e,u,y,offset);
+    g.box(...center,width,height,depth,color,{...material,ry:Math.atan2(-e.uz,e.ux)});
+  }
+  function ledge(e,y,width,u,rear,front,thickness,color) {
+    // The case has separate sill, drip face and underside; adjacent strips meet.
+    const a=u-width/2, b=u+width/2, t=y+thickness/2, low=y-thickness/2;
+    g.quad(atEdge(e,a,t,front),atEdge(e,b,t,front),atEdge(e,b,t,rear),atEdge(e,a,t,rear),color,stoneM);
+    facadePanel(e,u,y,width,thickness,front,color,stoneM);
+    g.quad(atEdge(e,a,low,rear),atEdge(e,b,low,rear),atEdge(e,b,low,front),atEdge(e,a,low,front),'#4e5158',glassM);
+  }
+  function detailValue(e,floor,bay,salt=0) {
+    // Independent samples keep fittings stable across facade LODs.
+    const raw=Math.sin(e.x*16.163+e.z*31.309+floor*73.171+bay*21.655+salt*5.376)*43758.5453;
+    return raw-Math.floor(raw);
+  }
+  function detailedElevation(e,bottom,top,building,dist,step) {
+    const {kind,colors,lights,lit}=building, glass=kind==='glass', brick=kind==='brick';
+    const close=dist<66, front=glass?.075:.18;
+    const bays=Math.max(1,Math.round(e.w/(glass?2.18:2.88))), bw=e.w/bays;
+    const pier=glass?.12:brick?.63:.54, openW=bw-pier;
+    const head=glass?.38:.54, sill=glass?.57:.84;
+    const rear=glass?-.86:-.49, tall=top-bottom;
+    const floors=Math.floor((tall+.06)/step);
+    // The backing sits at the back of the reveal. Foreground fins project beyond
+    // the slabs, so a move along the apartment windows exposes the jambs.
+    facadePanel(e,e.w/2,(top+bottom)/2,e.w,tall,rear-.12,colors[2],glassM);
+    for(let j=0;j<=bays;j++){
+      const width=j===0||j===bays?pier*.50:pier, u=j===0?width*.5:j===bays?e.w-width*.5:j*bw;
+      edgeSolid(e,u,(bottom+top)/2,width,tall,front-rear,front-(front-rear)/2,
+                glass?'#49545b':colors[0],glass?glassM:stoneM);
+      if(glass&&close)facadePanel(e,u,(bottom+top)/2,width*.47,tall-.025,front+.022,'#8a8a86',glassM);
+    }
+    for(let story=0;story<floors;story++){
+      const low=bottom+story*step, h=step-head-sill, cy=low+sill+h/2;
+      const row=Math.round((low-street)/step);
+      // Stacked slab fronts project beyond the deeper glass, with a metal drip
+      // and a dark expansion joint below the pale top edge.
+      const baseColor=glass?'#485762':colors[0], trim=glass?'#788086':colors[1];
+      facadePanel(e,e.w*.5,low+sill*.43,e.w,sill*.86,front-.07,baseColor,glass?glassM:stoneM);
+      ledge(e,low+sill*.91,e.w-.025,e.w*.5,rear-.07,front+.115,glass?.12:.155,trim);
+      ledge(e,low+step-head*.46,e.w-.025,e.w*.5,rear-.07,front+.025,head*.92,baseColor);
+      if(glass)facadePanel(e,e.w*.5,low+sill*.19,e.w-.06,.075,front-.044,'#374750',glassM);
+      if(glass&&close)facadePanel(e,e.w*.5,cy+h*.23,e.w-.06,.062,front-.006,'#637177',glassM);
+      for(let j=0;j<bays;j++){
+        const u=(j+.5)*bw, room=detailValue(e,row,Math.floor(j/2),1);
+        const occupied=room<lit+.15 && detailValue(e,row,j,2)>.10;
+        const idx=Math.floor(detailValue(e,row,j,3)*(occupied?lights.length:coldGlass.length));
+        const shade=occupied?lights[idx]:coldGlass[idx], paneDepth=rear+.017;
+        facadePanel(e,u,cy,openW+.035,h+.035,paneDepth,shade,occupied?{glow:.29}:facadeGlass);
+        if(!occupied) {
+          // Dark panes still show the upper clerestory where the evening sky is reflected.
+          facadePanel(e,u,cy+h*.38,openW-.025,h*.235,paneDepth+.019,dimGlass[j%dimGlass.length],facadeGlass);
+          continue;
+        }
+        if(close) {
+          const clerestory=atEdge(e,u,cy+h*.43,rear*.48);
+          if(detailValue(e,row,j,4)<.70) {
+            g.box(...clerestory,openW*.67,.034,.095,'#f5dfb6',{ry:Math.atan2(-e.uz,e.ux),glow:.74});
+          }
+          if(detailValue(e,row,j,5)<.44) {
+            const shadeH=h*(.19+.45*detailValue(e,row,j,6));
+            const blindsDepth=front-.21, blindTop=cy+h*.5;
+            facadePanel(e,u,blindTop-shadeH*.5,openW-.04,shadeH,blindsDepth,'#9d9c90',stoneM);
+            const slats=Math.max(2,Math.round(shadeH/.17));
+            for(let s=1;s<slats;s++)
+              facadePanel(e,u,blindTop-shadeH*s/slats,openW-.04,.032,blindsDepth+.014,'#777971',glassM);
+          } else if(detailValue(e,row,j,7)<.48) {
+            // The desk, monitor and side jamb sit in front of the lit wall.
+            const dx=(detailValue(e,row,j,8)-.5)*openW*.24;
+            edgeSolid(e,u+dx,cy-h*.34,openW*.74,.075,.27,rear+.33,'#68594e',glassM);
+            edgeSolid(e,u+dx+.08,cy-h*.27, .065,h*.13,.064,rear+.32,'#44474b',glassM);
+            edgeSolid(e,u+dx+.08,cy-h*.16,Math.min(.63,openW*.51),.34,.062,rear+.31,'#474c50',glassM);
+          }
+        } else if(detailValue(e,row,j,9)<.40) {
+          facadePanel(e,u,cy+h*.34,openW*.90,h*.31,rear+.21,'#a4a092',stoneM);
+        }
+      }
+    }
+    const rem=tall-floors*step;
+    if(rem>.015) {
+      facadePanel(e,e.w*.5,top-rem*.5,e.w,rem,front-.07,colors[0],glass?glassM:stoneM);
+    }
+    ledge(e,top-.085,e.w+.04,e.w*.5,rear,front+.17,.16,colors[1]);
+  }
+
   function cladding(e,bottom,top,building,dist,step) {
     const {kind,colors,lights,lit}=building, h=top-bottom;
     const glass=kind==='glass', near=dist<72, far=dist>112;
@@ -904,7 +1403,7 @@ function buildCity(g) {
       if(glass) {
         // Continuous reflective glass ribbon behind the interior office lights.
         const bandColor=seen?pick(deep):deep[0];
-        facadePanel(e,e.w/2,y,e.w-.10,bandH,.024,bandColor,glassM);
+        facadePanel(e,e.w/2,y,e.w-.10,bandH,.024,bandColor,facadeGlass);
         if(near&&y>-50) facadePanel(e,e.w/2,y-bandH/2-.06,e.w-.09,.095,.052,colors[1],glassM);
       }
       if(!seen && rand()<.45) continue;
@@ -920,7 +1419,7 @@ function buildCity(g) {
           const color=on?pick(lights):pick(deep);
           const shade=on && near && rand()<.24;
           const shutter=shade?range(.35,.72):0;
-          facadePanel(e,u,y-shutter*.5,width,bandH-shutter,.049,color,on?light:glassM);
+          facadePanel(e,u,y-shutter*.5,width,bandH-shutter,.049,color,on?light:facadeGlass);
           if(on&&near&&rand()<.20) {
             facadePanel(e,u,y+bandH*.28-shutter,width*.88,.095,.073,'#eee0bc',{glow:.76});
           } else if(!glass&&near&&rand()<.33) {
@@ -944,13 +1443,24 @@ function buildCity(g) {
     const {colors,kind}=building;
     for(let i=0;i<outline.length;i++) {
       const a=outline[i], b=outline[(i+1)%outline.length], e=edge(a,b);
-      facadePanel(e,e.w/2,(bottom+top)/2,e.w,top-bottom,0,colors[0],kind==='glass'?glassM:stoneM);
-      if(madeVisible(e)) {
-        if(e.w>2.1) cladding(e,bottom,top,building,dist,step);
+      const towardPlayer=madeVisible(e), minRelief=dist<66?-32:-19;
+      const firstDetailed=bottom>=minRelief?bottom:street+Math.ceil((minRelief-street)/step)*step;
+      const deepFacade=towardPlayer && dist<91 && e.w>3.8 && top-firstDetailed>step*.95;
+      const flatTop=deepFacade?firstDetailed:top;
+      if(flatTop-bottom>.001) {
+        facadePanel(e,e.w/2,(bottom+flatTop)/2,e.w,flatTop-bottom,0,colors[0],kind==='glass'?glassM:stoneM);
+        if(towardPlayer&&e.w>2.1)cladding(e,bottom,flatTop,building,dist,step);
+      }
+      if(deepFacade) detailedElevation(e,firstDetailed,top,building,dist,step);
+      if(towardPlayer && !deepFacade) {
         facadePanel(e,e.w/2,top-.18,e.w,.34,.10,colors[1],glassM);
         if(top>street+25 && e.w>4.5 && dist<115) {
           facadePanel(e,e.w/2,top-.55,e.w,.19,.07,colors[2],glassM);
         }
+      }
+      if(dist<93&&top>-42) {
+        edgeSolid(e,e.w*.5,top+.23,e.w,.46,.19,-.09,colors[0],stoneM);
+        edgeSolid(e,e.w*.5,top+.486,e.w+.035,.074,.33,-.08,colors[3],glassM);
       }
       const mid=[(a[0]+b[0])/2,top,(a[1]+b[1])/2];
       g.quad([x,top,z],[a[0],top,a[1]],mid,[b[0],top,b[1]],colors[2],stoneM);
@@ -977,6 +1487,31 @@ function buildCity(g) {
     }
     if(rand()<.36) antenna(x-w*.12,y+2,z+d*.05,range(2.2,4.6));
   }
+
+  // Small rooftop elements catch the horizon light individually: air handling
+  // equipment has fan hubs, inclined blades, ducts and a service access door.
+  function mechanicalDetail(x,y,z,w,d) {
+    const hx=x-w*.12,hz=z+d*.05,rw=w*.34,rd=d*.31;
+    baseBox(hx,y+2.07,hz,rw+.25,.14,rd+.25,'#a2a29b',glassM);
+    baseBox(hx+rw*.5+.035,y+1.03,hz+.10,.085,1.94,.88,'#51595e',glassM);
+    baseBox(hx+rw*.5+.10,y+.94,hz+.39,.075,.06,.15,'#acb1aa',glassM);
+    for(let n=0;n<2;n++) {
+      const ax=x+w*.23, az=z+(n-.5)*d*.25, r=Math.min(w,d)*.054;
+      g.cyl(ax,y+1.075,az,r*1.03,r*1.06,.095,16,'#606970',glassM);
+      g.cyl(ax,y+1.132,az,r*.91,r*.91,.02,16,'#343c42',glassM);
+      for(let j=0;j<6;j++){
+        const angle=j*Math.PI/3, dx=Math.cos(angle),dz=Math.sin(angle);
+        baseBox(ax+r*.46*dx,y+1.159,az+r*.46*dz,r*.67,.045,r*.18,'#838b8b',{mat:'metal',ry:-angle+.25});
+      }
+      g.cyl(ax,y+1.19,az,r*.19,r*.21,.115,12,'#b0af9e',glassM);
+    }
+    const px=x-w*.28,pz=z-d*.29;
+    g.cyl(px,y+.68,pz,.21,.22,1.36,12,'#78858b',glassM);
+    g.cyl(px,y+1.39,pz,.40,.40,.09,12,'#8d9696',glassM);
+    baseBox(hx-rw*.30,y+.28,pz,w*.32,.38,.48,'#828a8c',glassM);
+    baseBox(hx+rw*.12,y+.28,(hz+pz)*.5,.47,.38,hz-pz,'#828a8c',glassM);
+  }
+
   function roofTank(x,y,z,r) {
     const legs=r*1.12, h=r*2.15;
     for(const a of [-.6,.6]) for(const b of [-.6,.6]) {
@@ -994,10 +1529,127 @@ function buildCity(g) {
     for(let y=top-step*1.15;y>Math.max(street+5,top-45);y-=step) {
       const outside=face+normal*1.15;
       baseBox(cx,y,face+normal*.60,width,.21,1.35,'#a0998b',stoneM);
-      baseBox(cx,y+.63,outside,width,1.03,.09,'#68767c',glassM);
-      baseBox(cx,y+1.18,outside,width,.09,.13,'#a5a9a5',glassM);
-      baseBox(cx+width/2-.08,y+.68,face+normal*.64,.13,1.22,1.15,'#807c78',stoneM);
+      baseBox(cx,y+.18,outside,width,.21,.11,'#787e7d',glassM);
+      baseBox(cx,y+1.13,outside,width+.05,.082,.11,'#a5a9a5',glassM);
+      baseBox(cx,y+.62,outside,width,.047,.06,'#858e8f',glassM);
+      const posts=Math.max(3,Math.ceil(width/.68));
+      for(let j=0;j<=posts;j++) {
+        baseBox(cx+width*(j/posts-.5),y+.64,outside,.045,1.02,.055,'#727d7f',glassM);
+      }
+      for(const sign of [-1,1]) {
+        baseBox(cx+sign*(width*.5-.025),y+1.13,face+normal*.59,.065,.082,1.17,'#a5a9a5',glassM);
+      }
+      if(Math.floor((top-y)/step)%4===1) {
+        baseBox(cx+width*.29,y+.36,face+normal*.65,width*.24,.53,.38,'#77716a',stoneM);
+        g.ball(cx+width*.29,y+.82,face+normal*.65,width*.24,.56,.50,'#536457',{mat:'leaf'});
+      }
     }
+  }
+
+
+  function escapeStairs(x,z,w,d,top,step) {
+    // Alternating emergency stairs zigzag down the masonry street elevation.
+    const face=z+d*.5, cx=x+w*.18, span=Math.min(w*.29,3.3), iron='#4c5355';
+    const streetSide=face+1.07;
+    for(let floor=0;floor<5;floor++) {
+      const y=top-.48-step*(floor+1), dir=floor%2?1:-1;
+      baseBox(cx,y,face+.63,span+.44,.12,1.20,iron,glassM);
+      for(const side of [-1,1]) {
+        baseBox(cx+side*(span*.5+.12),y+.52,streetSide,.061,1.04,.061,iron,glassM);
+        baseBox(cx+side*(span*.5+.12),y+.98,face+.69,.06,.06,.75,iron,glassM);
+      }
+      baseBox(cx,y+1.02,streetSide,span+.29,.058,.061,iron,glassM);
+      baseBox(cx,y+.53,streetSide,span+.29,.037,.045,iron,glassM);
+      const x0=cx-dir*span*.44,x1=cx+dir*span*.44;
+      const z0=streetSide+.33;
+      for(let i=0;i<13;i++){
+        const t=(i+.5)/13;
+        baseBox(x0+(x1-x0)*t,y+step*t,z0,span/12,.069,.68,'#636866',glassM);
+      }
+      for(const dz of [-.36,.36]) {
+        g.beam([x0,y-.02,z0+dz],[x1,y+step-.02,z0+dz],.053,iron,glassM);
+        g.beam([x0,y+.91,z0+dz],[x1,y+step+.91,z0+dz],.038,iron,glassM);
+      }
+    }
+  }
+
+  function glazedVault(x,y,z,w,d) {
+    // An elliptical standing-seam conservatory rises above the roof coping.
+    const base=y+.64,h=d*.38,arcs=12,ribs=8;
+    baseBox(x,y+.31,z,w+.26,.62,d+.28,'#858580',glassM);
+    const pt=(j,i)=>{
+      const t=Math.PI*i/arcs;
+      return [x-w*.5+w*j/ribs,base+h*Math.sin(t),z+d*.5*Math.cos(t)];
+    };
+    const panes=['#677e88','#73858d','#5e7683','#809098'];
+    for(let j=0;j<ribs;j++)for(let i=0;i<arcs;i++) {
+      g.quad(pt(j,i),pt(j+1,i),pt(j+1,i+1),pt(j,i+1),panes[(i+(j%3===1?1:0))%panes.length],glassM);
+    }
+    for(let j=0;j<=ribs;j++)for(let i=0;i<arcs;i++) {
+      g.beam(pt(j,i),pt(j,i+1),j===0||j===ribs?.088:.054,'#b99d7b',glassM);
+    }
+    for(let i=0;i<=arcs;i+=2)g.beam(pt(0,i),pt(ribs,i),.054,'#8b8e89',glassM);
+    for(const j of [0,ribs]){
+      const end=[x-w*.5+w*j/ribs,base,z];
+      for(let i=0;i<arcs;i++) {
+        const a=pt(j,i),b=pt(j,i+1);
+        g.polygon(j?[end,a,b]:[end,b,a],i%2?'#b1a999':'#a69c8b',{glow:.15});
+        if(i%2===0)g.beam(end,a,.045,'#8f826e',glassM);
+      }
+    }
+  }
+
+  function winterGardenTower(x,z,w,d,top,skin,dist,step) {
+    // This office tower's double-height winter garden is open around a recessed
+    // core. Bronze V-columns carry the faceted upper storeys over the terrace.
+    const lower=top-18.2, upper=lower+6.8, chamfer=2.45;
+    block(x,z,w,d,street,lower,chamfer,skin,dist,step);
+    const garden=packet('glass',facades.glass[1]);
+    block(x+.65,z-.75,w*.69,d*.68,lower,upper,.95,garden,dist,step);
+    const outline=footprint(x,z,w,d,chamfer);
+    for(let k=0;k<outline.length;k++) {
+      const e=edge(outline[k],outline[(k+1)%outline.length]);
+      // Real V-shaped supports and a floating perforated parapet around the terrace.
+      const count=Math.max(1,Math.round(e.w/4.8));
+      for(let j=0;j<count;j++) {
+        const unit=e.w/count,u=(j+.5)*unit;
+        const foot=atEdge(e,u,lower+.20,-.40);
+        for(const side of [-1,1]) {
+          g.beam(foot,atEdge(e,u+side*unit*.43,upper-.11,-.35),.16,'#a28b70',glassM);
+        }
+      }
+      ledge(e,upper-.15,e.w+.01,e.w*.5,-Math.min(w,d)*.20,.20,.34,'#7b7773');
+      if(e.w>5.0) {
+        edgeSolid(e,e.w*.5,upper-.332,e.w*.83,.035,.10,-.47,'#e1c39f',{glow:.43});
+      }
+      if(!madeVisible(e))continue;
+      g.beam(atEdge(e,.06,lower+1.08,.10),atEdge(e,e.w-.06,lower+1.08,.10),.057,'#aba898',glassM);
+      const posts=Math.max(1,Math.round(e.w/1.55));
+      for(let j=0;j<=posts;j++) {
+        const u=(.04+(e.w-.08)*j/posts);
+        g.beam(atEdge(e,u,lower+.19,.08),atEdge(e,u,lower+1.09,.08),.034,'#7c8480',glassM);
+      }
+      if(e.w>6.) {
+        const pos=atEdge(e,e.w*.29,lower+.48,-1.05);
+        edgeSolid(e,e.w*.29,lower+.32,3.2,.58,.80,-1.05,'#686d69',stoneM);
+        for(let j=-1;j<=1;j++) {
+          g.ball(pos[0]+e.ux*j*.89,lower+1.02,pos[2]+e.uz*j*.89,1.08,1.04,.87,
+                 j===0?'#596957':'#526554',{mat:'leaf'});
+        }
+      }
+    }
+    block(x,z,w*.95,d*.95,upper,top,chamfer*.92,skin,dist,step);
+    // Slender buttresses continue across the spandrels onto a copper-edged cornice.
+    const crown=footprint(x,z,w*.95,d*.95,chamfer*.92);
+    for(let k=0;k<crown.length;k++) {
+      const e=edge(crown[k],crown[(k+1)%crown.length]);
+      if(e.w<4.)continue;
+      for(const q of [.15,.48,.81]) {
+        edgeSolid(e,e.w*q,(upper+top)/2,.19,top-upper+.28,.69,.32,'#a89980',glassM);
+      }
+      ledge(e,top+.32,e.w+.02,e.w*.5,-.18,.53,.20,'#b2a186');
+    }
+    glazedVault(x-.4,top+.08,z-.30,w*.75,d*.66);
   }
 
   function tower(x,z,w,d,top,style,form) {
@@ -1006,6 +1658,10 @@ function buildCity(g) {
     const step=style==='brick'?2.85:style==='stone'?3.00:3.25;
     const bevel=style==='glass' && rand()<.61 ? Math.min(w,d)*range(.09,.20) : 0;
     let y=top;
+    if(form==='wintergarden') {
+      winterGardenTower(x,z,w,d,top,skin,dist,step);
+      return;
+    }
     if(form==='stepped') {
       const shoulder=top-range(8.0,13.2);
       block(x,z,w,d,street,shoulder,bevel,skin,dist,step);
@@ -1027,8 +1683,13 @@ function buildCity(g) {
     }
     if((style==='stone'||style==='brick')&&dist<80&&form!=='stepped'&&rand()<.64) balconies(x,z,w,d,top,step);
     if(dist<100) {
-      if(style==='brick') roofTank(x+w*.16,y+.08,z-d*.10,Math.min(w,d)*.12);
-      else roofServices(x,y,z,w,d);
+      if(style==='brick') {
+        roofTank(x+w*.16,y+.08,z-d*.10,Math.min(w,d)*.12);
+        if(dist<78&&y>-37)escapeStairs(x,z,w,d,y,step);
+      } else {
+        roofServices(x,y,z,w,d);
+        if(dist<84 && y>-36)mechanicalDetail(x,y,z,w,d);
+      }
     } else {
       baseBox(x,y+1.25,z,w*.33,2.5,d*.38,skin.colors[1],stoneM);
     }
@@ -1040,7 +1701,7 @@ function buildCity(g) {
     [-38,12,15,19,-16,'stone','slab'],
     [-45,-21,13,18,7,'glass','stepped'],
     [-25,-49,14,14,-23,'brick','slab'],
-    [19,-42,16,19,10,'glass','stepped'],
+    [19,-42,16,19,10,'glass','wintergarden'],
     [-7,-75,14,18,1,'stone','slab'],
     [33,-100,17,16,32,'stone','deco'],
     [-79,-69,16,18,20,'glass','stepped'],
@@ -1061,6 +1722,10 @@ function buildCity(g) {
     const style=pick(['glass','glass','glass','stone','stone','brick']);
     blocks.push([x,z,w,d,top,style,rand()<.42?'stepped':'slab']);
   }
+  // Compact reflection proxies use the same footprints and heights as the meshes.
+  // Include the player's building so its mass is visible across the street.
+  const nearest=[[0,0,15,13,4.4],...blocks.slice().sort((a,b)=>Math.hypot(a[0],a[1])-Math.hypot(b[0],b[1])).slice(0,15)];
+  g.reflectors=new Float32Array(nearest.flatMap(([x,z,w,d,top])=>[x,z,w*.5,(Math.round(top)+144)*1024+Math.round(d*16)]));
   for(const args of blocks) tower(...args);
 
   // The south bank is a second, more distant skyline, behind the roof tanks
@@ -1094,6 +1759,16 @@ function buildCity(g) {
     for(let j=-5;j<=4;j++) {
       const b=j*24;
       if(Math.hypot(a,b)>139||a>12&&b>12) continue;
+      if(Math.hypot(a,b)<90 && (a<0 || b<0)) {
+        // Crossings, stop lines and lane markings follow the intersecting avenues.
+        // Markings sit just above the asphalt, below all animated car bodies.
+        baseBox(a,street-.043,b,.085,.018,2.8,'#b5a78b');
+        baseBox(b,street-.013,a,2.8,.018,.085,'#b5a78b');
+        for(let stripe=0;stripe<5;stripe++) {
+          baseBox(a-1.90+stripe*.95,street-.043,b+8.00,.45,.018,1.37,'#bcb9ab');
+        }
+        baseBox(a-1.25,street-.043,b+6.72,2.28,.018,.15,'#bcb9ab');
+      }
       const z=b+range(-6,6);
       baseBox(a-.77,street+.15,z,1.03,.38,1.96,pick(['#8c9292','#866d69','#4f626c']),{mat:'trafficZ'});
       baseBox(a-.77,street+.31,z-.96,.74,.12,.11,'#f6dbaf',{glow:.74,mat:'trafficZ'});
@@ -1133,28 +1808,101 @@ function buildPenthouse(g) {
     for (const s of [-1,1]) for (const t of [-1,1])
       box(x+s*width/2,(top+bottom)/2,z+t*depth/2,thickness,top-bottom,thickness,color,metal);
   }
+  // Sweep a small circular section along a sewn seam, branch or furniture rail.
+  function sweep(path,radius,color,material,segments=24,sides=6) {
+    const points=Array.from({length:segments+1},(_,i)=>path(i/segments));
+    const frames=points.map((p,i)=>{
+      const tangent=V3.unit(V3.sub(points[Math.min(segments,i+1)],points[Math.max(0,i-1)]));
+      const side=V3.unit(V3.cross(tangent,Math.abs(tangent[1])>.94?[0,0,1]:[0,1,0]));
+      return [side,V3.cross(side,tangent)];
+    });
+    sheet(segments,sides,(u,v)=>{
+      const i=Math.round(v*segments),r=typeof radius==="function"?radius(v):radius;
+      const a=u*Math.PI*2;return points[i].map((q,k)=>q+r*(frames[i][0][k]*Math.cos(a)+frames[i][1][k]*Math.sin(a)));
+    },color,material);
+  }
+  const power=(v,e)=>Math.sign(v)*Math.pow(Math.abs(v),e);
+  const clamp01=v=>Math.max(0,Math.min(1,v));
+  const ease=v=>{v=clamp01(v);return v*v*(3-2*v)};
+  function paddedForm(cfg) {
+    const {x,y,z,w,d,h,color,material=creamLinen,rx=0,ry=0,rz=0,
+      seamColor=color,padding=.40,compression=.025,seed=0,thickness=.005}=cfg;
+    const roll=rotator({rx,ry,rz});
+    // Equal-distance sampling avoids wide triangular fans down the broad sides of a pillow.
+    const outline=Array.from({length:321},(_,k)=>{
+      const a=k*Math.PI/160;return [w*.5*power(Math.cos(a),padding),d*.5*power(Math.sin(a),padding),a];
+    });
+    const lengths=[0];for(let k=1;k<outline.length;k++)lengths.push(lengths[k-1]+Math.hypot(outline[k][0]-outline[k-1][0],outline[k][1]-outline[k-1][1]));
+    function at(az){
+      const distance=az*lengths[320];let low=0,high=320;
+      while(high-low>1){const mid=(low+high)>>1;if(lengths[mid]>distance)high=mid;else low=mid;}
+      const f=(distance-lengths[low])/(lengths[high]-lengths[low]||1);
+      return outline[low].map((q,i)=>q+(outline[high][i]-q)*f);
+    }
+    const point=(az,rad,side)=>{
+      const [px,pz,a]=at(az);
+      const xx=px*rad,zz=pz*rad,corner=Math.pow(Math.abs(Math.sin(2*a)),3);
+      const crown=Math.sqrt(Math.max(0,1-rad**4))*(.99-.19*rad**4*corner);
+      const cradle=side>0?compression*Math.exp(-((xx/w+.10)**2/.09+(zz/d-.12)**2/.15)):0;
+      const pucker=.12*h*Math.sin(15*a+seed+rad*4.1)*Math.pow(rad,6)*(1-rad)*2.7*corner;
+      const yy=side*(.5*h*crown+pucker)-cradle*(1-rad*rad);
+      const local=roll([xx,yy,zz]);
+      return [x+local[0],y+local[1],z+local[2]];
+    };
+    const rings=w<.15?24:44;
+    for(const side of [-1,1]){
+      const core=.052,divs=side>0?rings:Math.round(rings*.72);
+      const layers=w<.15?6:side>0?11:6;
+      sheet(layers,divs,(u,v)=>point(side>0?1-u:u,core+(1-core)*Math.sin(v*Math.PI/2),side),color,material);
+      const ring=Array.from({length:divs},(_,k)=>point(side>0?1-k/divs:k/divs,core,side));
+      g.polygon(ring,color,material,roll([0,side,0]));
+    }
+    sweep(t=>point(t,1,1),thickness,seamColor,material,rings,5);
+  }
   function pot(x,y,z,r,h,color) {
-    cyl(x,y+h*.47,z,r*.95,r*.76,h*.92,14,color,stone);
-    cyl(x,y+h*.90,z,r,r*.96,h*.16,14,color,stone);
-    cyl(x,y+h*.997,z,r*.85,r*.85,.012,14,"#493b33");
-    return y+h;
+    const sections=[[.65,0],[.78,.025],[.80,.065],[.85,.16],[.93,.58],[1,.90],[1.01,.955],
+      [.995,.981],[.96,1],[.90,.995],[.889,.966],[.872,.92]];
+    sheet(sections.length-1,36,(u,v)=>{
+      const [rad,ht]=sections[Math.round(v*(sections.length-1))],a=2*Math.PI*u;
+      return [x+r*rad*Math.cos(a),y+h*ht,z+r*rad*Math.sin(a)];
+    },color,{mat:"ceramic"});
+    cyl(x,y+h*.925,z,r*.873,r*.872,.006,28,"#51483a",{mat:"soil"});
+    return y+h*.926;
   }
   function plant(x,y,z,size,potColor,compact=false) {
-    const h = pot(x,y,z,.29*size,.53*size,potColor);
-    const greens=["#365147","#4b6150","#49644b","#61735b","#536d55"];
-    const count=compact?8:13;
-    for(let i=0;i<count;i++){
-      const a=i*2.399+g.rand()*.45,dx=Math.cos(a),dz=Math.sin(a);
-      const reach=size*(.17+g.rand()*.36), tall=size*((compact?.32:.67)+g.rand()*(compact?.27:.66));
-      const q=[x+dx*reach,h+tall,z+dz*reach];
-      rod([x,h,z],q,.009*size,"#5f7052");
-      const lf=size*(.39+g.rand()*.23),lw=size*(compact?.095:.15);
-      sheet(9,6,(u,v)=>{
-        const along=v*lf,across=(u*2-1)*lw*Math.pow(Math.sin(v*Math.PI),.72);
-        return [q[0]+dx*along-dz*across,q[1]+lf*(.53*Math.sin(v*Math.PI)-.35*v)-Math.abs(across)*.25,q[2]+dz*along+dx*across];
-      },pick(greens),{mat:"plain"});
-      const p1=[q[0]+dx*lf*.35,q[1]+lf*.31,q[2]+dz*lf*.35];
-      rod(q,p1,size*.0047,"#8a9172");
+    const height=pot(x,y,z,(compact?.164:.215)*size,(compact?.305:.409)*size,potColor);
+    const greens=["#435f4b","#56714f","#627b54","#47684e","#637e57"];
+    const trunks=compact?2:3;
+    for(let branch=0;branch<trunks;branch++){
+      const theta=branch*2.40+.35,dx=Math.cos(theta),dz=Math.sin(theta);
+      const stemHeight=size*(compact?.37:.93)*(1-.16*branch),lean=size*(compact?.070:.115)*(branch+.40);
+      const trunk=t=>[x+dx*(lean*t*t+.013*size*Math.sin(3*t+theta)),
+        height+stemHeight*t,z+dz*lean*t+.018*size*Math.sin(2.4*t+branch)];
+      sweep(trunk,t=>size*(compact?.009:.017)*(1-.82*t),"#796d52",{mat:"bark"},14,7);
+      const leaves=compact?5:8;
+      for(let k=0;k<leaves;k++){
+        const fraction=.22+.74*k/(leaves-1),at=trunk(fraction);
+        const a=k*2.32+theta+.27*g.rand(),ax=Math.cos(a),az=Math.sin(a);
+        const length=size*(compact?.138:.249)*(.8+.34*g.rand()),width=length*(.208+.045*g.rand());
+        const petiole=size*(compact?.044:.085)*(.85+.34*g.rand()),roll=.22*(g.rand()-.45);
+        const q=[at[0]+petiole*ax,at[1]+.59*petiole,at[2]+petiole*az];
+        sweep(t=>[at[0]+ax*petiole*t,at[1]+petiole*(.88*t-.29*t*t),at[2]+az*petiole*t],
+          t=>size*.0048*(1-.43*t),"#667656",{},4,5);
+        const shape=(u,t)=>{
+          const r=u*2-1,spine=length*t,blade=width*Math.sin(Math.PI*t)**.83*(1.16-.34*t);
+          const lateral=r*blade,curve=length*(.34*Math.sin(t*2.74)-.19*t*t);
+          const fold=Math.abs(r)**.68*blade*.26+r*blade*roll+.011*size*r*r*Math.sin(t*8.2+k);
+          return [q[0]+ax*spine-az*lateral,q[1]+curve-fold,q[2]+az*spine+ax*lateral];
+        };
+        sheet(10,6,(u,t)=>shape(1-u,t),pick(greens),{mat:"leaf"});
+        sweep(t=>{const p=shape(.5,t);p[1]+=.001*size;return p;},t=>.0016*size*(1-.82*t),"#87946b",{},7,4);
+        for(const sign of [-1,1]) for(const split of [.32,.63]){
+          sheet(1,3,(u,v)=>{
+            const p=shape(.5+sign*(.003+.36*u+.006*v),split+.11*u);
+            p[1]+=.00085*size;return p;
+          },"#788966",{mat:"leaf"});
+        }
+      }
     }
   }
   function ceramic(x,y,z,s,c) {
@@ -1346,66 +2094,99 @@ function buildPenthouse(g) {
   ceramic(-5.70,.90,1.31,.53,"#d1b69b");
   book(-5.7,.90,3.13,.46,.065,.43,coverColors[0]);
 
-  // Upholstered bedstead, piping and independently draped bed linens.
-  round(-4.44,.026,-2.08,3.36,.030,3.65,.011,"#8c8a7b",fabric);
-  legs(-4.44,-2.12,2.13,2.24,.055,.24,.073,"#514237");
-  round(-4.44,.261,-2.14,2.54,.25,2.81,.073,"#837568",fabric);
-  round(-4.44,.469,-2.10,2.44,.29,2.67,.119,"#d4cebf",creamLinen);
-  round(-4.44,.722,-3.62,2.77,1.23,.15,.074,"#84796a",fabric);
-  for(let i=0;i<7;i++) round(-5.58+i*.38,.754,-3.525,.370,1.03,.105,.044,"#aca08b",creamLinen);
-  for(const side of [-1,1]){
-    box(-4.44+side*1.222,.56,-2.08,.008,.012,2.44,"#aca89b",creamLinen);
-    box(-4.44,.56,-2.10+side*1.33,2.16,.011,.009,"#aead9e",creamLinen);
+  // The mattress rests on a continuous recessed plinth; all bedding is supported by its crown.
+  const bedX=-4.44,bedZ=-2.10;
+  round(bedX,.022,bedZ,3.32,.022,3.61,.009,"#928f7e",fabric);
+  round(bedX,.120,bedZ,2.21,.179,2.47,.058,"#645849",{mat:"walnut"});
+  round(bedX,.237,bedZ,2.53,.235,2.77,.070,"#887c6b",fabric);
+  round(bedX,.461,bedZ,2.41,.287,2.66,.091,"#d8d2c4",creamLinen);
+  const mattressLoop=t=>{
+    const a=t*2*Math.PI;return [bedX+1.205*power(Math.cos(a),.15),.544,bedZ+1.332*power(Math.sin(a),.15)];
+  };
+  sweep(mattressLoop,.0063,"#c2bbad",creamLinen,72,6);
+  // A continuous winged headboard, tucked into shallow vertical channels.
+  const panel=(s,t,back=false)=>{
+    const x=(s-.5)*2.74,edge=Math.abs(x)/1.37,top=1.29+.10*(1-edge**5),y=.20+(top-.20)*t;
+    const channel=.012*Math.exp(-((Math.sin((s*6+.23)*Math.PI))**2)/.017)*Math.sin(Math.PI*t)**.38;
+    const z=-3.539-.073*t+.190*edge**5+.036*Math.sin(Math.PI*t)-channel;
+    return [bedX+x,y,z-(back?.127:0)];
+  };
+  sheet(18,70,(u,v)=>panel(1-u,v),"#a79981",creamLinen);
+  sheet(5,40,(u,v)=>panel(u,v,true),"#897d69",fabric);
+  function join(a,b,n,m,c,mat) {
+    sheet(n,m,(u,v)=>{const p=a(u),q=b(u);return p.map((x,i)=>x+(q[i]-x)*v);},c,mat);
   }
-  function pillow(cx,cy,cz,w,h,d,color,yaw=0,lift=.10){
-    const ca=Math.cos(yaw),sa=Math.sin(yaw);
-    function shape(u,v){
-      const phi=(u-.5)*Math.PI,theta=v*Math.PI*2;
-      const power=(a,e)=>Math.sign(a)*Math.pow(Math.abs(a),e);
-      const xp=w*.5*power(Math.cos(phi),.54)*power(Math.cos(theta),.42);
-      const zp=d*.5*power(Math.cos(phi),.54)*power(Math.sin(theta),.42);
-      const t=power(Math.sin(phi),.72);
-      const creases=.009*Math.sin(xp*36+zp*8)*Math.cos(zp*12)*Math.abs(xp/w)*2;
-      return [cx+xp*ca-zp*sa,cy+h*.5*t-lift*zp/d+creases,cz+xp*sa+zp*ca];
-    }
-    sheet(13,27,shape,color,creamLinen);
-    let last=shape(.52,0);
-    for(let k=1;k<=32;k++){const next=shape(.52,k/32);rod(last,next,.007,color,creamLinen);last=next;}
+  for(const v of [0,1]){
+    join(u=>panel(u,v),u=>panel(u,v,true),2,50,"#9c8e76",creamLinen);
+    sweep(t=>panel(t,v),.006,"#c5b49a",creamLinen,48,5);
   }
-  pillow(-5.03,.696,-3.028,1.02,.29,.63,"#e9e2d4",-.061,.13);
-  pillow(-3.86,.701,-3.039,1.03,.28,.63,"#e3dccb",.042,.13);
-  pillow(-5.01,.717,-2.699,.69,.21,.41,"#b3b0a1",.082,.10);
-  pillow(-3.89,.722,-2.712,.70,.19,.43,"#b5b0a0",-.058,.10);
-  // v indexes the spread across the bed, u the distance towards its foot.
-  function comforter(u,v){
-    const t=v*2-1, ax=Math.abs(t);
-    const dropX=Math.max(0,(ax-.876)/.124),dropZ=Math.max(0,(u-.908)/.092);
-    const edge=Math.max(dropX,dropZ);
-    const x=-4.44+Math.sign(t)*(Math.min(ax,.876)*1.39+Math.sin(dropX*Math.PI/2)*.091);
-    const z=-2.65+Math.min(u,.908)*2.22+.114*Math.sin(dropZ*Math.PI/2)+.027*Math.cos(t*3.4+u*2);
-    const folds=.016*Math.sin(t*10+u*4)+.013*Math.cos(t*17-u*7)*(.3+u*.7)+.009*Math.sin(t*31+u*11);
-    const gathered=.046*Math.exp(-Math.pow((u-.12-.038*Math.sin(t*4))/.069,2));
-    return [x,.716+.052*Math.cos(t*1.4)*(1-u*.35)+folds+gathered-.272*edge,z];
+  for(const u of [0,1])join(t=>panel(u,t),t=>panel(u,t,true),2,16,"#958771",creamLinen);
+  // Rounded corner and resting side drop, measured along the cloth in metres.
+  function foldOver(q,edge,r){
+    const beyond=Math.max(0,q-edge),turn=Math.min(Math.PI/2,beyond/r);
+    return [Math.min(q,edge)+r*Math.sin(turn),r*(1-Math.cos(turn))+Math.max(0,beyond-r*Math.PI/2)];
   }
-  sheet(38,56,comforter,"#e4ddcb",creamLinen);
-  // The turned-down sheet makes a soft, wandering front edge around the pillows.
-  sheet(9,54,(u,v)=>{
-    const yEdge=.08+.015*Math.sin(v*9);const q=comforter(u*yEdge,v);
-    q[1]+=.022+.029*Math.sin(Math.PI*u);return q;
-  },"#e9e3d5",creamLinen);
-  function throwCloth(u,v){
-    const along=.62+.22*u+.025*Math.sin(v*6.2);
-    const q=comforter(along,v);
-    q[1]+=.036+.021*Math.sin(v*19+u*.55)+.016*Math.sin(u*9-v*4);
-    q[2]+=.024*Math.sin(v*11.2);return q;
+  const batting=(s,t)=>{
+    const q=(s-.5)*2.95+.022*t,rawZ=-2.79+t*2.416+.047*Math.cos(s*Math.PI*2+.54)*(1-.65*t);
+    const xx=foldOver(Math.abs(q),1.145,.124),zz=foldOver(rawZ+2.79,1.987,.124);
+    const side=ease(xx[1]/.32),end=ease(zz[1]/.28);
+    const flankRipple=.021*Math.sin(rawZ*12.3+q*1.8)+.009*Math.sin(rawZ*24+q*1.7);
+    const x=bedX+Math.sign(q)*(xx[0]+side*flankRipple+.018*end*side);
+    const z=-2.79+zz[0]+end*(.019*Math.sin(q*8.7+.65)+.013*Math.sin(q*15.7));
+    const near=(center,w)=>Math.exp(-(((rawZ-center)/w)**2));
+    const edgePull=near(-2.49+.102*Math.cos(q*2.6),.095)*(.039+.018*Math.cos(q*3.7));
+    const wrinkle=near(-1.97-.16*q,.095)*.031*Math.exp(-(((q-.46)/.84)**2))
+      +near(-1.43+.087*q,.074)*.022*Math.exp(-(((q+.78)/.51)**2))
+      -.014*near(-2.17+.104*Math.sin(q*3.2),.14);
+    const loft=.023+.019*(1-Math.min(1,(q/1.25)**2))+.009*Math.sin(q*7+rawZ*1.9);
+    const y=.603+loft+edgePull+wrinkle-Math.hypot(xx[1],zz[1])*.91;
+    return [x,y,z];
+  };
+  // Batting thickness follows the local normal, so the quilting reads correctly from the foot.
+  const inner=(s,t)=>{
+    const q=batting(s,t),u=V3.sub(batting(Math.min(s+.0008,1),t),batting(Math.max(s-.0008,0),t));
+    const v=V3.sub(batting(s,Math.min(t+.0008,1)),batting(s,Math.max(0,t-.0008)));
+    const n=V3.unit(V3.cross(v,u)),th=.021+.014*Math.sin(Math.PI*s)*Math.sin(Math.PI*t);
+    return q.map((val,i)=>val-th*n[i]);
+  };
+  sheet(45,60,batting,"#e3dcd0",creamLinen);
+  sheet(12,24,(u,v)=>inner(1-u,v),"#d4cdbf",creamLinen);
+  for(const side of [0,1]){
+    join(t=>batting(side,t),t=>inner(side,t),2,45,"#d7cec0",creamLinen);
+    join(t=>batting(t,side),t=>inner(t,side),2,55,"#d7cec0",creamLinen);
   }
-  sheet(16,52,throwCloth,"#777d73",fabric);
-  for(const u0 of [.055,.083,.895]){
-    sheet(2,45,(u,v)=>{const q=throwCloth(u0+u*.015,v);q[1]+=.003;return q;},"#b4b1a0",fabric);
-  }
-  for(let k=0;k<50;k++){
-    const v=(k+.5)/50,a=throwCloth(1,v);
-    rod(a,[a[0]+.004*Math.sin(k*4),a[1]-.016,a[2]+.055+.014*Math.sin(k*3)],.0028,"#96998a",fabric);
+  // The turned-back edge joins the quilt, rolling around its stuffing into a soft lip.
+  const turn=(u,v)=>{
+    const w=.097+.019*Math.sin(u*5.2),t=.030+w*v;
+    const p=batting(u,t);p[1]+=.010+.038*Math.sin(v*Math.PI)**.85;
+    p[2]+=.016*Math.sin(v*Math.PI);return p;
+  };
+  sheet(10,52,turn,"#ebe4d6",creamLinen);
+  sweep(t=>turn(t,.98),.0038,"#d4c9b7",creamLinen,55,5);
+  // A pair of full sleeping pillows with smaller off-centre accent pillows.
+  paddedForm({x:-5.022,y:.719,z:-3.035,w:1.115,h:.275,d:.644,rx:-.14,ry:-.070,
+    color:"#eae4d8",seamColor:"#cfc6b6",padding:.46,compression:.012,seed:1.3});
+  paddedForm({x:-3.84,y:.714,z:-3.037,w:1.065,h:.27,d:.640,rx:-.16,ry:.082,
+    color:"#e5ddcf",seamColor:"#d2c8b7",padding:.48,compression:.009,seed:3.4});
+  paddedForm({x:-5.02,y:.716,z:-2.694,w:.71,h:.193,d:.44,rx:-.14,ry:.111,
+    color:"#b2ad9c",seamColor:"#a69c86",padding:.52,compression:.009,thickness:.004});
+  paddedForm({x:-3.91,y:.705,z:-2.69,w:.68,h:.198,d:.432,rx:-.18,ry:-.15,
+    color:"#bab3a1",seamColor:"#a79e8a",padding:.50,compression:.008,thickness:.004});
+  // Folded wool runner laid diagonally across the lower third. Its ends follow the side drape.
+  const runner=(s,t)=>{
+    const along=.58+.234*t+.032*Math.sin(s*4.2)-.032*s;
+    const across=.025+s*.975,p=batting(across,along);
+    const rump=.013+.017*Math.sin(s*20+t*.85)**2+.006*Math.sin(s*33+t*2.6);
+    const edge=ease(Math.max(0,Math.abs(across-.5)-.36)/.14);
+    p[0]+=Math.sign(across-.5)*edge*rump;p[1]+=rump*(1-.78*edge);p[2]+=.012*Math.sin(s*9);
+    return p;
+  };
+  sheet(16,52,runner,"#687166",fabric);
+  for(const along of [.048,.086,.892,.928])
+    sheet(2,50,(u,v)=>{const p=runner(u,along+v*.013);p[1]+=.0028;return p;},"#a7aa97",fabric);
+  for(let k=0;k<54;k++){
+    const a=runner((k+.5)/54,1);
+    rod(a,[a[0]+.006*Math.sin(k*2.7),a[1]-.009-.003*Math.sin(k),a[2]+.034+.009*Math.sin(k*1.9)],.0019,"#8e9583",fabric);
   }
   const nightX=-2.48, nightZ=-3.18;
   legs(nightX,nightZ,.56,.48,.02,.33,.067,walnut);
@@ -1413,10 +2194,26 @@ function buildPenthouse(g) {
   box(nightX,.50,nightZ+.35,.63,.23,.028,"#b28561",wood);
   box(nightX,.51,nightZ+.375,.13,.028,.025,brass,metal);
   box(nightX,.67,nightZ,.82,.07,.72,walnut,wood);
-  cyl(nightX,.74,nightZ-.03,.16,.18,.07,16,brass,metal);
-  cyl(nightX,.93,nightZ-.03,.024,.024,.35,10,brass,metal);
-  cyl(nightX,1.204,nightZ-.03,.16,.30,.34,18,"#f2bf81",{glow:.59});
-  cyl(nightX,1.028,nightZ-.03,.281,.281,.018,18,"#ffd996",amber);
+  cyl(nightX,.734,nightZ-.03,.117,.135,.050,28,"#9c896b",brassMetal);
+  cyl(nightX,.913,nightZ-.03,.016,.019,.319,16,"#aa9573",brassMetal);
+  // A folded linen shade, open underneath, with a rolled brass hem and visible bulb.
+  function lampShade(cx,y,cz,rb,rt,height){
+    sheet(7,88,(u,v)=>{
+      const a=u*2*Math.PI;
+      const rib=.0021*Math.cos(a*22),r=rb+(rt-rb)*v-.010*Math.sin(v*Math.PI)+rib;
+      return [cx+r*Math.cos(a),y+height*v,cz+r*Math.sin(a)];
+    },"#dbc6a3",{mat:"linen",glow:.48});
+    for(const v of [0,1]){
+      const r=v?rt:rb;
+      sweep(t=>[cx+r*Math.cos(t*Math.PI*2),y+height*v,cz+r*Math.sin(t*Math.PI*2)],.0039,"#c5ac85",brassMetal,44,5);
+    }
+    for(let k=0;k<3;k++){
+      const a=k*2*Math.PI/3;
+      rod([cx,y+.019,cz],[cx+rb*.96*Math.cos(a),y+.014,cz+rb*.96*Math.sin(a)],.0027,"#a49478",brassMetal);
+    }
+    orb(cx,y+.055,cz,.074,.096,.074,"#ffe4b9",{mat:"ceramic",glow:.91});
+  }
+  lampShade(nightX,1.043,nightZ-.03,.250,.154,.308);
   book(nightX+.13,.71,nightZ+.19,.27,.042,.19,"#364f53",.12);
 
   // A family photograph and an unsealed letter on the bedside table.
@@ -1479,46 +2276,7 @@ function buildPenthouse(g) {
     round(5.08,.191+i*.182,-2.902,.542,.173,.026,.009,"#64665b",metal);
     box(5.08,.242+i*.182,-2.883,.178,.015,.020,"#403f38",metal);
   }
-  function monitor(x,z,width,height,style){
-    const center=1.442,front=z+.041;
-    round(x,.818,z+.045,.32,.032,.217,.015,"#4d5050",metal);
-    cyl(x,1.068,z-.026,.027,.027,.47,16,"#72716a",metal);
-    rod([x,1.265,z-.04],[x,1.434,z-.14],.029,"#484d4c",metal);
-    round(x,center,z,width,height,.065,.023,"#232b2e",metal);
-    box(x,center,front-.004,width-.035,height-.034,.014,"#101d25",{mat:"screen",glow:.39});
-    const left=x-width*.463,bottom=center-height*.355,graphW=width*.693,graphH=height*.625;
-    box(x,center+height*.422,front+.006,width-.056,.045,.008,"#25323b",{mat:"screen",glow:.48});
-    for(let i=0;i<5;i++)
-      box(left+graphW*.5,bottom+i*graphH/4,front+.010,graphW,.003,.006,"#34454b",{glow:.49});
-    for(let i=0;i<7;i++)
-      box(left+graphW*i/6,bottom+graphH*.5,front+.010,.0025,graphH,.006,"#2c3d45",{glow:.44});
-    for(let i=0;i<43;i++){
-      const k=i/42, trend=style?.66-.29*k+.12*Math.sin(i*.31):.25+.53*k+.12*Math.sin(i*.27);
-      const y=bottom+graphH*(trend+.056*Math.sin(i*2.01+.27)),col=Math.sin(i*1.73)>.02?"#d89078":"#89c9b6";
-      box(left+k*graphW,y,front+.016,.0037,graphH*(.07+.10*g.rand()),.006,col,{glow:.86});
-      box(left+k*graphW,y,front+.019,graphW*.015,graphH*(.033+.064*g.rand()),.006,col,{glow:.87});
-      const h=.010+g.rand()*.031;
-      box(left+k*graphW,bottom+h*.5,front+.017,graphW*.014,h,.006,"#607e7d",{glow:.60});
-    }
-    box(x+width*.254,center-height*.018,front+.014,.004,height*.737,.007,"#3e4d50",{glow:.5});
-    for(let i=0;i<12;i++){
-      const y=center+height*.315-i*height*.0625;
-      box(x+width*.328,y,front+.016,width*(.05+g.rand()*.06),.007,.006,"#a0ada8",{glow:.72});
-      box(x+width*.422,y,front+.016,width*(.027+g.rand()*.04),.006,.006,i%4===0?"#d49a80":"#95c2af",{glow:.71});
-    }
-    box(x+width*.439,center-height*.482,front+.004,.012,.004,.006,"#7db5a9",{glow:.71});
-  }
-  monitor(3.05,-3.60,1.36,.756,0);
-  monitor(4.48,-3.60,1.36,.756,1);
-  round(3.71,top+.007,-3.016,1.31,.014,.474,.006,"#52574e",leather);
-  round(3.55,.824,-2.99,.545,.031,.186,.013,"#424746",metal);
-  for(let row=0;row<5;row++) for(let key=0;key<(row===4?7:15);key++){
-    const space=row===4&&key===4,w=space?.13:.025;
-    box(3.307+key*.034+(row===4&&key>4?.114:0)+(space?.051:0),.847,-3.063+row*.033,w,.016,.025,
-      key===0&&row===0?"#ac8168":"#9a9d92",metal);
-  }
-  orb(4.13,.833,-2.98,.084,.052,.130,"#b0b2a7",metal);
-  box(4.13,.858,-2.999,.009,.008,.021,"#73786f",metal);
+  buildWorkstation(g,top);
   cup(5.20,top,-2.99,1);
   book(2.55,top,-3.02,.279,.026,.183,"#646f65",-.12);
   // Desk ephemera: a coffee ring, folded sticky note, and a pen left uncapped.
@@ -1535,30 +2293,65 @@ function buildPenthouse(g) {
   rod([2.11,1.27,-3.44],[2.25,1.45,-3.34],.012,"#a19277",brassMetal);
   cyl(2.26,1.43,-3.33,.047,.130,.11,28,"#696c60",metal);
   cyl(2.26,1.373,-3.33,.122,.122,.007,26,"#ffddac",{glow:.91});
-  // Chair: cast aluminum five-star base, saddle seat and a formed leather back.
+  // Twin-wheel castors swivel under tapered, arched spokes. The pale veneer follows the leather shell.
   const chairX=3.58,chairZ=-1.96;
   for(let i=0;i<5;i++){
-    const a=i*2*Math.PI/5,x=chairX+Math.cos(a)*.318,z=chairZ+Math.sin(a)*.318;
-    rod([chairX,.188,chairZ],[x,.092,z],.024,"#6b6e68",metal);
-    for(const dx of [-.022,.022])
-      cyl(x+dx,.065,z,.05,.05,.028,14,"#343735",{rz:Math.PI/2,mat:"metal"});
+    const a=.22+i*Math.PI*2/5,dx=Math.cos(a),dz=Math.sin(a);
+    const x=chairX+.313*dx,z=chairZ+.313*dz;
+    const cast=t=>[chairX+.31*t*dx,.172-.068*t*t+.008*Math.sin(t*Math.PI),chairZ+.31*t*dz];
+    sweep(cast,t=>.035-.021*t,"#7d8074",metal,10,8);
+    cyl(x,.093,z,.013,.016,.059,12,"#72756b",metal);
+    for(const side of [-1,1]){
+      const wheel=t=>[x+dz*(side*.019+(t-.5)*.024),.047,z-dx*(side*.019+(t-.5)*.024)];
+      sweep(wheel,t=>.043-.004*(2*t-1)**4,"#383e3b",metal,4,18);
+      rod(wheel(0),wheel(1),.025,"#62685c",metal);
+    }
   }
-  cyl(chairX,.285,chairZ,.042,.047,.259,16,"#5a5e57",metal);
-  round(chairX,.420,chairZ,.611,.089,.550,.043,"#5a493d",{mat:"walnut"});
-  round(chairX,.488,chairZ,.583,.114,.525,.056,"#937761",leather);
-  for(const side of [-1,1]){
-    rod([chairX+side*.267,.445,chairZ+.04],[chairX+side*.326,.679,chairZ+.037],.019,"#68695e",metal);
-    round(chairX+side*.323,.687,chairZ+.014,.064,.045,.303,.021,"#795e4b",leather);
-  }
-  round(chairX,.694,chairZ+.24,.074,.398,.055,.024,"#5c5d51",metal);
-  const seatBack=(u,v,offset)=>{
-    const angle=(v-.5)*1.81,profile=.49+.033*Math.sin(u*Math.PI);
-    return [chairX+profile*.84*Math.sin(angle),.672+u*.55,chairZ+.233+profile*.62*(Math.cos(angle)-.64)+.089*u+offset];
+  cyl(chairX,.204,chairZ,.042,.059,.100,22,"#717569",metal);
+  cyl(chairX,.299,chairZ,.028,.028,.160,20,"#a0a69a",metal);
+  round(chairX,.375,chairZ,.189,.086,.245,.024,"#46504b",metal);
+  const seatFit=(s,t)=>{
+    const X=s*2-1,Z=t*2-1;
+    return [chairX+.284*X*(1-.104*Z*Z),.405+.045*X*X-.016*Z+.011*Math.cos(Z*2.3),
+      chairZ+.251*Z*(1-.150*X**4)];
   };
-  sheet(16,25,(u,v)=>seatBack(u,v,0),"#91725b",leather);
-  sheet(16,25,(u,v)=>seatBack(u,v,-.037),"#a08167",leather);
-  for(const v of [0,1])for(let i=0;i<12;i++)rod(seatBack(i/12,v,-.017),seatBack((i+1)/12,v,-.017),.022,"#94745d",leather);
-  for(const u of [0,1])for(let i=0;i<24;i++)rod(seatBack(u,i/24,-.017),seatBack(u,(i+1)/24,-.017),.022,"#94745d",leather);
+  sheet(15,20,seatFit,"#796856",{mat:"walnut"});
+  paddedForm({x:chairX,y:.475,z:chairZ-.008,w:.575,h:.118,d:.512,rx:-.048,color:"#937a62",
+    seamColor:"#ac937a",material:leather,padding:.43,compression:.016,thickness:.0035});
+  for(const side of [-1,1]){
+    const arm=t=>[chairX+side*(.247+.091*Math.sin(Math.PI*.78*t)),.425+.247*t,chairZ-.069+.093*t];
+    sweep(arm,t=>.0165+.0024*Math.cos(Math.PI*t),"#888a7a",metal,12,9);
+    paddedForm({x:chairX+side*.314,y:.679,z:chairZ+.003,w:.070,h:.057,d:.283,
+      color:"#87715d",seamColor:"#99806a",material:leather,padding:.58,compression:0,thickness:.0025});
+  }
+  // Sculpted shell narrows at the waist, bends for lumbar support and curls inward along its sides.
+  function chairBack(s,t,offset=0){
+    const q=s*2-1,a=q*.90;
+    const r=.375+.045*Math.sin(t*Math.PI*.9)+.041*t*t-.028*Math.exp(-((t-.34)**2)/.039);
+    const y=.531+.649*t-.055*Math.abs(q)**4*(t**4)+.021*q*q*(1-t)**2;
+    return [chairX+r*Math.sin(a),y,chairZ+.164+.108*t+.107*t*t+
+      .082*Math.exp(-((t-.30)**2)/.055)-.168*(1-Math.cos(a))/.379+offset];
+  }
+  sheet(23,29,(u,v)=>chairBack(1-u,v),"#735e4d",{mat:"walnut"});
+  sheet(22,28,(u,v)=>chairBack(u,v,-.044),"#88735d",leather);
+  for(const t of [0,1]){
+    join(u=>chairBack(u,t),u=>chairBack(u,t,-.044),3,28,"#b29979",{mat:"walnut"});
+    sweep(u=>chairBack(u,t,-.033),.004,"#a58c71",leather,28,5);
+  }
+  for(const side of [0,1])
+    join(u=>chairBack(side,u),u=>chairBack(side,u,-.044),3,22,"#ad9476",{mat:"walnut"});
+  for(const [lo,hi] of [[.055,.29],[.30,.575],[.586,.956]]){
+    sheet(10,23,(s,t)=>{
+      const p=chairBack(s,lo+(hi-lo)*t,-.044);p[2]-=.036*Math.sin(Math.PI*t)**.50*Math.sin(Math.PI*s)**.46;return p;
+    },"#9c8268",leather);
+  }
+  const strut=t=>[chairX,.350+.493*t,chairZ+.099+.250*Math.sin(t*Math.PI*.54)];
+  sweep(strut,t=>.015+.005*Math.sin(Math.PI*t),"#8a8e80",metal,18,10);
+  for(const t of [.27,.65]){
+    const p=chairBack(.5,t,.008);
+    round(p[0],p[1],p[2],.085,.036,.020,.009,"#8b8c7f",metal);
+    for(const sign of [-1,1])rod([p[0]+sign*.030,p[1],p[2]],[p[0]+sign*.030,p[1],p[2]+.013],.005,"#a5a797",metal);
+  }
   // A handwoven wool rug: narrow selvedges, a broken warp stripe, and short fringe.
   const rugX=2.91,rugZ=1.95;
   box(rugX,.026,rugZ,5.30,.032,3.85,"#a79d87",fabric);
@@ -1569,31 +2362,70 @@ function buildPenthouse(g) {
     for(let k=0;k<80;k++)
       box(rugX-2.55+k*.064,.034,rugZ+edge*(1.943+g.rand()*.01),.011,.009,.044+g.rand()*.029,"#c0b7a2",fabric);
   }
-  // Low three-seat sofa, upholstered deck, loose foam seats and a right-side chaise.
-  const sx=3.98,sz=.45;
-  legs(sx,sz,3.48,.72,.045,.18,.065,"#5a5043");
-  round(sx,.190,sz,3.98,.123,1.03,.045,"#615748",{mat:"walnut"});
-  round(sx,.302,sz,4.02,.236,1.13,.079,"#647069",fabric);
-  round(sx,.590,sz-.504,4.0,.692,.239,.102,"#778078",fabric);
-  for(let i=0;i<3;i++){
-    const x=sx-1.21+i*1.21;
-    round(x,.467,sz+.06,1.188,.19,.96,.086,"#91978b",fabric);
-    round(x,.740,sz-.302,1.180,.444,.225,.102,"#899084",{rx:-.14,mat:"fabric"});
-    const z=sz+.542;
-    rod([x-.49,.456,z],[x+.49,.456,z],.006,"#9fa196",fabric);
+  // A single upholstered horseshoe surrounds the deep seat, like a curved bent-ply frame.
+  const sx=3.98,sz=.45,backZ=-.064,leftX=sx-1.88,rightX=sx+1.88;
+  const bend=.235,armRun=.827,backRun=rightX-leftX-2*bend,arc=Math.PI*bend/2;
+  const pathLength=armRun*2+arc*2+backRun;
+  function upholsteryPath(t) {
+    let d=t*pathLength;
+    if(d<armRun) return [leftX,backZ+bend+armRun-d,0,-1,1-d/armRun];
+    d-=armRun;
+    if(d<arc){
+      const a=d/bend;return [leftX+bend*(1-Math.cos(a)),backZ+bend*(1-Math.sin(a)),Math.sin(a),-Math.cos(a),0];
+    }
+    d-=arc;
+    if(d<backRun)return [leftX+bend+d,backZ,1,0,0];
+    d-=backRun;
+    if(d<arc){
+      const a=d/bend;return [rightX-bend+bend*Math.sin(a),backZ+bend*(1-Math.cos(a)),Math.cos(a),Math.sin(a),0];
+    }
+    d-=arc;return [rightX,backZ+bend+d,0,1,clamp01(d/armRun)];
   }
-  for(const side of [-1,1])
-    round(sx+side*1.907,.504,sz,.22,.485,1.16,.088,"#7d857a",fabric);
-  legs(sx+1.22,1.49,.83,.67,.043,.18,.068,"#5a5043");
-  round(sx+1.22,.313,1.45,1.18,.240,.98,.073,"#6a746c",fabric);
-  round(sx+1.22,.469,1.456,1.18,.181,.98,.083,"#91978b",fabric);
-  round(sx-1.42,.73,sz-.02,.557,.509,.175,.086,"#aa896f",{rz:.18,rx:-.2,mat:"linen"});
-  round(sx+1.32,.75,sz-.03,.562,.54,.19,.091,"#c0b7a1",{rz:-.15,rx:-.2,mat:"linen"});
-  sheet(20,29,(u,v)=>{
-    const edge=Math.max(0,(u-.71)/.29),ridge=.014*Math.sin(v*22+u*4)+.009*Math.sin(v*13-u*7);
-    return [sx+.72+.91*v+.019*Math.sin(u*3+v*10),.59+ridge-.23*edge,
-      1.30+.62*Math.min(u,.71)+.19*Math.sin(edge*Math.PI*.51)+.026*Math.sin(v*7)];
-  },"#b7aa93",creamLinen);
+  function surround(u,v){
+    const [x,z,tx,tz,out]=upholsteryPath(v),a=u*Math.PI*2;
+    const bottom=.226,top=.938-.207*ease(out),mid=(bottom+top)/2,h=(top-bottom)/2;
+    const end=clamp01(Math.min(v,1-v)*pathLength/.116);
+    const dome=Math.sqrt(Math.max(.00012,1-(1-end)**2));
+    const dr=(.116+.022*(1-out))*power(Math.cos(a),.60)*dome;
+    return [x+tz*dr,mid+h*power(Math.sin(a),.72)*dome,z-tx*dr];
+  }
+  sheet(128,20,(u,v)=>surround(1-u,v),"#777f74",fabric);
+  for(const side of [0,1]) sweep(t=>surround(t,side?.980:.020),.005,"#8e9486",fabric,27,5);
+  // A recessed walnut rail holds the upholstered seat base above the rug.
+  for(const x of [sx-1.61,sx-.48,sx+1.54])for(const z of [sz-.38,sz+.39])
+    cyl(x,.121,z,.054,.067,.143,14,"#665849",{mat:"walnut"});
+  round(sx,.224,sz,3.83,.153,1.055,.069,"#6c695a",{mat:"walnut"});
+  round(sx,.325,sz,3.79,.198,1.07,.075,"#758071",fabric);
+  for(let i=0;i<3;i++){
+    const cx=sx-1.183+i*1.183,chaise=i===2;
+    if(chaise){
+      cyl(cx-.44,.122,1.74,.051,.061,.140,14,"#655747",{mat:"walnut"});
+      cyl(cx+.44,.122,1.74,.051,.061,.140,14,"#655747",{mat:"walnut"});
+      round(cx,.233,1.45,1.16,.168,.93,.076,"#686b5c",{mat:"walnut"});
+      round(cx,.326,1.43,1.16,.203,.93,.083,"#74816f",fabric);
+    }
+    paddedForm({x:cx,y:.486,z:chaise?.986:sz+.071,w:1.166,h:.201,d:chaise?1.907:.976,
+      color:i===1?"#919785":"#8b9483",seamColor:"#a5a895",material:fabric,padding:.274,compression:.017,thickness:.0056,seed:i*1.7});
+    paddedForm({x:cx,y:.757+(i===1?-.012:0),z:sz-.305,w:1.166,h:.245,d:.49,rx:1.353,ry:(i-1)*.021,
+      color:"#828c7b",seamColor:"#979e89",material:fabric,padding:.36,compression:.014,thickness:.0045,seed:i+.4});
+  }
+  // Throw pillows lean on the arms; off-axis compression keeps the two silhouettes distinct.
+  paddedForm({x:sx-1.39,y:.75,z:sz-.016,w:.52,h:.20,d:.51,rx:1.23,rz:.22,ry:.087,color:"#af8f74",
+    seamColor:"#bca28b",material:creamLinen,padding:.64,compression:.011,seed:3,thickness:.0038});
+  paddedForm({x:sx+1.42,y:.746,z:sz-.015,w:.53,h:.21,d:.50,rx:1.28,rz:-.25,ry:-.103,color:"#c9bea5",
+    seamColor:"#aca28c",material:creamLinen,padding:.61,compression:.013,seed:1,thickness:.0038});
+  function sofaThrow(s,t){
+    const x=sx+.78+.78*s,xt=s*2-1,z=1.34+.736*t+.032*s;
+    const end=foldOver(z,1.811,.089),drop=end[1];
+    const y=.587-.042*xt*xt+.012*Math.sin(s*12+t*1.7)+.012*Math.cos(s*22-t*3.1)-drop*.96;
+    return [x+.005*Math.sin(t*6),y,end[0]+.018*Math.sin(s*18)*ease(drop/.14)];
+  }
+  sheet(18,32,sofaThrow,"#b7aa91",creamLinen);
+  for(const t of [.063,.109,.832,.875])
+    sheet(2,32,(u,v)=>{const p=sofaThrow(u,t+.012*v);p[1]+=.002;return p;},"#929581",fabric);
+  for(let k=0;k<28;k++){
+    const p=sofaThrow((k+.5)/28,1);rod(p,[p[0]+.003*Math.sin(k*1.83),p[1]-.036-.006*Math.sin(k),p[2]+.009],.0017,"#a2a28f",fabric);
+  }
   // A travertine coffee table, softly bevelled at its perimeter, on two offset pedestals.
   const tx=2.74,tz=2.33;
   cyl(tx-.48,.235,tz,.173,.195,.36,28,"#887b68",stone);
@@ -1608,8 +2440,7 @@ function buildPenthouse(g) {
   const lx=5.70,lz=-.89;
   cyl(lx,.067,lz,.208,.222,.11,30,"#746f5f",brassMetal);
   cyl(lx,.973,lz,.019,.023,1.71,20,"#a28f71",brassMetal);
-  cyl(lx,1.99,lz,.247,.335,.358,42,"#d8be98",{mat:"linen",glow:.51});
-  cyl(lx,1.807,lz,.318,.318,.01,40,"#ffddb0",amber);
+  lampShade(lx,1.807,lz,.324,.241,.356);
   plant(5.72,.02,-3.97,1.09,"#a99b84");plant(-5.66,.01,.33,.91,"#997f68");
   plant(-5.46,.01,4.02,.65,"#a1a596",true);
   const ax=-3.84,az=2.20;
@@ -1701,7 +2532,7 @@ function buildFarm(g, plots, story = {}) {
     }
     // Hedges and woodlots follow the contour. Each tree is a trunk with branching sprays.
     // Ground-level close-ups use the orchard models below; distant branches form the horizon.
-    for(let i=0;i<108;i++) {
+    for(let i=0;i<95;i++) {
       const a=between(0,tau),r=i<65?between(24,41):between(42,86);
       const x=Math.cos(a)*r,z=Math.sin(a)*r*.86,h=between(3.8,7.9),y=terrestrialHeight(x,z);
       woodlandTree(x,y,z,h);
@@ -1865,22 +2696,56 @@ function buildFarm(g, plots, story = {}) {
         box(side+sign*.037,1.21,zz+.075,.022,2.13,.028,'#875244',wood);
       }
     }
-    function roofStrip(x1,y1,x2,y2,side) {
-      const len=Math.hypot(x2-x1,y2-y1), tilt=Math.atan2(y2-y1,x2-x1);
-      const cx=x+(x1+x2)/2, cy=(y1+y2)/2;
-      box(cx,cy+.04,z,len+.09,.105,3.34,'#455559',{rz:tilt,mat:'metal'});
-      for(let i=0;i<11;i++) {
-        box(cx,cy+.106,z-1.60+i*.319,len+.04,.029,.031, i%3 ? '#5b6b68':'#697977',{rz:tilt,mat:'metal'});
+    function roofStrip(x1,y1,x2,y2) {
+      const len=Math.hypot(x2-x1,y2-y1),tilt=Math.atan2(y2-y1,x2-x1);
+      const nx=-(y2-y1)/len,ny=(x2-x1)/len,normal=[nx,ny,0];
+      const at=(u,zz,offset)=>[x+lerp(x1,x2,u)+nx*offset,lerp(y1,y2,u)+ny*offset,z+zz];
+      const depth=3.50, bays=11,pitch=depth/bays;
+      box(x+(x1+x2)*.5,(y1+y2)*.5-.012,z,len+.010,.060,depth,'#584f40',{rz:tilt,mat:'wood'});
+      // A folded seam has two raised cheeks, a rolled lip, and a shallow stiffener.
+      // The pans span the slope continuously; grazing light reveals the metal profile.
+      const section=[[0,.034],[.019,.033],[.037,.014],[.17,.014],[.19,.019],[.21,.014],
+        [.48,.014],[.50,.018],[.52,.014],[.83,.014],[.86,.020],[.88,.014],[.957,.014],[.971,.048],[.992,.049],[1,.034]];
+      const shades=['#63736f','#647671','#5b6d69','#6a7a73','#60716c'];
+      for(let k=0;k<bays;k++){
+        const zz=-depth*.5+k*pitch, shade=shades[(k*3)%shades.length];
+        for(let n=1;n<section.length;n++) {
+          const [a,ha]=section[n-1],[b,hb]=section[n],za=zz+a*pitch,zb=zz+b*pitch;
+          const faceNormal=V3.unit([nx*(zb-za),ny*(zb-za),ha-hb]);
+          g.polygon([at(0,za,ha),at(0,zb,hb),at(1,zb,hb),at(1,za,ha)],shade,metal,faceNormal);
+        }
+        if(k%2===0)for(const side of [-1,1]){
+          const u=side<0?.155:.79;
+          const left=at(u-.006,zz+pitch*.944,.021),right=at(u+.006,zz+pitch*.944,.021);
+          g.polygon([left,at(u,zz+pitch*.925,.025),right,at(u,zz+pitch*.963,.025)],'#8e9387',metal,normal);
+        }
       }
-      for (const face of [z+1.685,z-1.685]) {
-        box(cx,cy,face,len+.14,.135,.080,'#b4ad94',{rz:tilt,mat:'wood'});
+      for(const sign of [-1,1]){
+        const zz=sign*(depth*.5+.002);
+        box(x+(x1+x2)*.5,(y1+y2)*.5-.045,z+zz,len+.024,.103,.067,'#a29c82',{rz:tilt,mat:'wood'});
+        g.polygon([at(0,zz-sign*.041,.052),at(0,zz+sign*.043,.052),at(1,zz+sign*.043,.052),at(1,zz-sign*.041,.052)],'#788078',metal,normal);
+        g.polygon([at(0,zz+sign*.043,.052),at(0,zz+sign*.046,-.010),at(1,zz+sign*.046,-.010),at(1,zz+sign*.043,.052)],'#69726e',metal,[0,0,sign]);
       }
-      box(x+x1, y1+.094, z,.083,.082,3.42,side,metal);
     }
-    roofStrip(-2.06,2.16,-shoulderX,shoulder,'#526366');
-    roofStrip(-shoulderX,shoulder,0,ridge,'#687677');
-    roofStrip(0,ridge,shoulderX,shoulder,'#82908a');
-    roofStrip(shoulderX,shoulder,2.06,2.16,'#657571');
+    roofStrip(-2.12,2.12,-shoulderX,shoulder);
+    roofStrip(-shoulderX,shoulder,0,ridge);
+    roofStrip(0,ridge,shoulderX,shoulder);
+    roofStrip(shoulderX,shoulder,2.12,2.12);
+    // Ridge and shoulder flashing lap each roof break. The underside has rafter tails.
+    for(const sign of [-1,1]){
+      const pts=[[0,ridge+.09],[sign*.10,ridge+.06],[sign*.16,ridge+.018]];
+      const knuckle=[[sign*(shoulderX-.095),shoulder+.076],[sign*shoulderX,shoulder+.058],
+        [sign*(shoulderX+.075),shoulder-.054]];
+      for(const profile of [pts,knuckle]) for(let k=1;k<profile.length;k++){
+        const [ax,ay]=profile[k-1],[bx,by]=profile[k];
+        g.polygon([[x+ax,ay,z-1.79],[x+bx,by,z-1.79],[x+bx,by,z+1.79],[x+ax,ay,z+1.79]],'#77827a',metal,[sign*.32,.95,0]);
+      }
+      for(let k=0;k<9;k++){
+        const zz=z-1.56+k*.394;
+        box(x+sign*1.992,2.19,zz,.287,.094,.072,'#83705a',{rz:-sign*.68,mat:'oak'});
+        box(x+sign*2.083,2.111,zz,.097,.077,.081,'#978069',{rz:-sign*.68,mat:'oak'});
+      }
+    }
     const trim='#b1ad97';
     // Rolled eaves, downpipes, gutter brackets and lag screws remain legible from the doorway.
     for(const sign of [-1,1]) {
@@ -1912,10 +2777,33 @@ function buildFarm(g, plots, story = {}) {
       }
       box(x+sign*.126,1.00,front+.278,.046,.19,.045,'#494a40',metal);
     }
-    box(x,1.995,front+.18,2.34,.076,.089,'#4a504b',metal);
-    for(const xx of [-.65,.65]) {
-      box(x+xx,1.92,front+.22,.071,.18,.04,'#575951',metal);
+    // Steel track extends past the opening so both leaves could slide clear.
+    for(const [yy,ww,dd] of [[2.017,3.78,.043],[2.054,3.80,.079],[1.982,3.79,.084]])
+      box(x,yy,front+.190,ww,.027,dd,'#585e56',metal);
+    function faceBolt(xx,yy,zz,r) {
+      cyl(xx,yy,zz,r,r,.012,6,'#909184',{rx:Math.PI*.5,mat:'metal'});
     }
+    for(const off of [-1.77,-1.18,-.59,0,.59,1.18,1.77]){
+      box(x+off,2.015,front+.120,.049,.16,.084,'#68695d',metal);
+      faceBolt(x+off,2.082,front+.166,.014);
+    }
+    for(const xx of [-.79,-.19,.19,.79]){
+      box(x+xx,1.906,front+.248,.061,.245,.021,'#66675a',metal);
+      cyl(x+xx,2.049,front+.228,.047,.047,.048,14,'#444b44',{rx:Math.PI*.5,mat:'metal'});
+      cyl(x+xx,2.049,front+.251,.027,.027,.012,12,'#777c6d',{rx:Math.PI*.5,mat:'metal'});
+      faceBolt(x+xx,1.843,front+.265,.014);
+    }
+    // The hasp and drop-pin sit between a pair of U-shaped, worn door pulls.
+    for(const sign of [-1,1]) {
+      const xx=x+sign*.123,pz=front+.310;
+      for(const yy of [.908,1.056]){
+        box(xx,yy,front+.275,.052,.051,.019,'#77776a',metal);
+        beam([xx,yy,front+.280],[xx,yy,pz+.024],.011,'#6a6d61',metal);
+      }
+      beam([xx,.910,pz+.024],[xx,1.055,pz+.024],.011,'#a4a494',metal);
+    }
+    box(x,.825,front+.282,.165,.039,.013,'#807b67',metal);
+    beam([x+.026,.807,front+.307],[x+.026,.875,front+.307],.009,'#8b826b',metal);
     box(x,2.68,front+.078,.75,.71,.095,'#603e32');
     box(x,2.68,front+.129,.60,.55,.068,'#af5947',wood);
     for(const xx of [-.357,.357]) box(x+xx,2.68,front+.175,.065,.69,.061,trim,wood);
@@ -1979,18 +2867,52 @@ function buildFarm(g, plots, story = {}) {
       beam([x-r0,y0,z+r0],[x+r0,y0,z+r0],.03,dark,metal);
     }
     box(x,hub,z,.26,.26,.56,'#776953',metal);
-    const rotorZ=z+.29;
-    for(let i=0;i<12;i++) {
-      const a=(i+.26)*tau/12, xx=Math.cos(a), yy=Math.sin(a);
-      beam([x+.12*xx,hub+.12*yy,rotorZ],[x+.82*xx,hub+.82*yy,rotorZ],.018,dark,{mat:'windmill'});
-      box(x+.691*xx,hub+.691*yy,rotorZ+.028,.42,.19,.045,
-        i%3?'#9ca498':'#a7aca0',{rz:a+.17,mat:'windmill'});
-      box(x+.866*xx,hub+.866*yy,rotorZ+.056,.066,.187,.049,'#936959',{rz:a+.17,mat:'windmill'});
+    const rotorZ=z+.29,vanes=18,spin={mat:'windmill'};
+    const wheelPoint=(angle,r,depth)=>[x+Math.cos(angle)*r,hub+Math.sin(angle)*r,rotorZ+depth];
+    const plateShades=['#a1aba1','#aab3a6','#929e93','#a5aea1'];
+    for(let i=0;i<vanes;i++) {
+      const a=(i+.26)*tau/vanes,step=tau/vanes;
+      // The blades are tapered sheet steel, rolled into a shallow scoop. Their
+      // red witness stripe follows the curved sheet instead of floating above it.
+      function vanePoint(u,r){
+        const angle=a+(u-.5)*step*(.63+.21*r)+(.90-r)*.13;
+        return wheelPoint(angle,r,.025+u*.059+.021*Math.sin(u*Math.PI)-r*.017);
+      }
+      const rings=[.47,.54,.79,.841,.902];
+      for(let r=1;r<rings.length;r++)for(let k=0;k<4;k++){
+        const u0=k*.25,u1=(k+1)*.25,lo=rings[r-1],hi=rings[r];
+        g.polygon([vanePoint(u0,lo),vanePoint(u0,hi),vanePoint(u1,hi),vanePoint(u1,lo)],
+          r===4?'#966b59':plateShades[i%4],spin);
+      }
+      for(const radius of [.47,.83]){
+        beam(wheelPoint(a,radius,-.025),wheelPoint(a+step,radius,-.025),.009,'#717d72',spin);
+      }
+      if(i%3===0){
+        for(const offset of [-.09,.09])beam(wheelPoint(a,.115,-.018),wheelPoint(a+offset,.83,-.025),.012,'#778274',spin);
+      }
     }
-    ball(x,hub,rotorZ+.08,.22,.22,.17,'#987355',metal);
+    cyl(x,hub,rotorZ+.043,.110,.133,.108,16,'#82715c',{rx:Math.PI*.5,mat:'metal'});
+    cyl(x,hub,rotorZ+.113,.044,.051,.034,8,'#a1967d',{rx:Math.PI*.5,mat:'metal'});
+    for(const sx of [-1,1]) {
+      box(x+sx*.118,hub,z-.012,.021,.243,.33,'#7e7f6c',metal);
+      for(const yy of [-.083,.083])for(const zz of [-.11,.11]){
+        cyl(x+sx*.136,hub+yy,z+zz,.012,.012,.020,6,'#a19880',{rz:Math.PI*.5,mat:'metal'});
+      }
+    }
     // The weather tail extends behind the wheel.
     beam([x,hub,z-.20],[x,hub+.03,z-1.02],.031,dark,metal);
-    box(x,hub+.04,z-.85,.04,.34,.40,'#ae654d',metal);
+    // Riveted fishtail weather vane balances the rotor; the pump rod descends into the platform.
+    const tail=[[z-.46,hub+.02],[z-.80,hub+.18],[z-1.28,hub+.24],[z-1.18,hub+.03],[z-1.27,hub-.15],[z-.78,hub-.088]];
+    g.polygon(tail.map(([zz,yy])=>[x,yy,zz]),'#a77861',metal,[1,0,0]);
+    for(let j=0;j<tail.length;j++){
+      const [zz,yy]=tail[j],[nz,ny]=tail[(j+1)%tail.length];
+      beam([x,yy,zz],[x,ny,nz],.008,'#969783',metal);
+    }
+    beam([x+.027,.34,z+.025],[x+.027,hub-.15,z+.025],.016,'#756f5d',metal);
+    for(let j=0;j<7;j++){
+      const yy=.48+j*.35,dx=.50-(yy-.1)*.11;
+      beam([x-dx,yy,z+dx],[x-dx,yy,z+dx-.19],.015,'#948b75',metal);
+    }
     cyl(x-.16,.43,z-.12,.069,.10,.82,8,'#7a9287',metal);
     beam([x-.16,.78,z-.1],[x+.31,.78,z-.1],.065,'#829b8e',metal);
     beam([x+.31,.78,z-.1],[x+.31,.62,z-.1],.056,'#829b8e',metal);
@@ -2012,7 +2934,23 @@ function buildFarm(g, plots, story = {}) {
   function tree(x,z,scale,fruit) {
     const base=terrestrialHeight(x,z),h=scale*3.17,phase=random()*tau;
     const palette=pick(canopyPalettes);
-    function limb(p,q,r) { beam(p,q,r,pick(bark),barkMat); }
+    function limb(p,q,r) {
+      const shade=pick(bark);
+      if(r<h*.009){beam(p,q,r,shade,barkMat);return;}
+      // Curved, tapering growth with a slightly fluted base. A shared ring normal
+      // keeps the silhouette round as the player walks around the trunk.
+      const direction=V3.unit(V3.sub(q,p));
+      const radial=V3.unit(V3.cross(direction,Math.abs(direction[1])>.9?[1,0,0]:[0,1,0]));
+      const tangent=V3.cross(radial,direction);
+      const phase=p[0]*1.92+p[2]*.7,wide=r>h*.02,segments=wide?11:8,rings=wide?5:3;
+      surface(rings,segments,(u,v)=>{
+        const ang=u*tau,cs=Math.cos(ang),sn=Math.sin(ang);
+        const radius=r*lerp(1.27,.74,v)*(1+.064*Math.sin(ang*5+v*1.47+phase));
+        const sway=r*.73*Math.sin(v*Math.PI)*Math.cos(phase);
+        const core=p.map((n,k)=>lerp(n,q[k],v)+radial[k]*sway);
+        return core.map((n,k)=>n+(radial[k]*cs+tangent[k]*sn)*radius);
+      },shade,barkMat);
+    }
     const root=[x,base,z],mid=[x+.054*h,base+h*.245,z-.027*h],high=[x+.021*h,base+h*.51,z+.032*h];
     limb(root,mid,h*.031);limb(mid,high,h*.024);
     for(let i=0;i<6;i++) {
@@ -2101,13 +3039,45 @@ function buildFarm(g, plots, story = {}) {
       }
     }
   }
+  function tomato(x,y,z,r,angle,color) {
+    // Lobed shoulders, sloping sides, and the shallow depression around the calyx.
+    const sides=10, rings=[], normals=[];
+    for(const b of [-1.09,-.37,.36,1.04]){
+      const row=[],ns=[],cb=Math.cos(b),sb=Math.sin(b);
+      for(let k=0;k<sides;k++){
+        const a=k*tau/sides,rib=1+.080*Math.cos(5*a+angle)*(.51+.49*Math.abs(sb));
+        row.push([x+r*cb*Math.cos(a)*rib,y+r*(sb*.87-.15*Math.max(0,sb)**8),z+r*cb*Math.sin(a)*rib]);
+        ns.push(V3.unit([cb*Math.cos(a),sb*1.12,cb*Math.sin(a)]));
+      }
+      rings.push(row);normals.push(ns);
+    }
+    for(let k=0;k<sides;k++){
+      const next=(k+1)%sides;
+      g.polygon([[x,y-r*.87,z],rings[0][k],rings[0][next]],color,leafMat,[0,-1,0]);
+      g.polygon([rings[3][k],[x,y+r*.72,z],rings[3][next]],color,leafMat,[0,1,0]);
+      for(let j=0;j<3;j++){
+        const verts=[rings[j][k],rings[j+1][k],rings[j+1][next],rings[j][next]];
+        const ns=[normals[j][k],normals[j+1][k],normals[j+1][next],normals[j][next]];
+        if(g.smoothFace)g.smoothFace(...verts,ns,color,leafMat);
+        else g.polygon(verts,color,leafMat);
+      }
+    }
+    for(let k=0;k<5;k++){
+      const a=angle+k*tau/5;
+      leaf(x,y+r*.76,z,a,r*.72,r*.094,-r*.14,r*.12,'#5c6e41');
+    }
+  }
   function plant(x,y,z,crop,stage,variant) {
     const ready=stage==='ready',wet=stage==='watered';
     const rotation=variant*2.399;
     if (crop === 'corn') {
       const h=(ready ? 1.49 : wet ? .52 : .18)*(.94+.075*Math.sin(rotation));
       const rad=ready ? .026 : wet ? .017 : .008;
-      cyl(x,y+h*.49,z,rad*.52,rad,h*.98,8,'#879058',leafMat);
+      cyl(x,y+h*.49,z,rad*.52,rad,h*.98,9,'#879058',leafMat);
+      if(ready)for(let k=1;k<=4;k++){
+        const t=k*.173+.035,rr=rad*(.99-.43*t);
+        cyl(x,y+h*t,z,rr*.98,rr*1.11,h*.015,8,'#9b9f68',leafMat);
+      }
       const n=ready ? 9 : wet ? 5 : 3;
       for(let i=0;i<n;i++) {
         const t=i/(n+1),a=rotation+i*2.62;
@@ -2131,11 +3101,27 @@ function buildFarm(g, plots, story = {}) {
       if(ready) {
         const a=rotation+.48,dx=Math.cos(a),dz=Math.sin(a);
         const ex=x+dx*.042,ez=z+dz*.042;
-        ball(ex,y+h*.61,ez,.088,.24,.088,'#bc9b57',leafMat);
-        leaf(ex-.01,y+h*.50,ez,a,.051,.043,.226,.025,'#849051');
-        for(let i=0;i<4;i++){
-          const aa=a+i*1.57;
-          beam([x,y+h*.94,z],[x+Math.cos(aa)*.076,y+h+.092,z+Math.sin(aa)*.076],.006,'#b9a470');
+        const earY=y+h*.575, earH=h*.168, earR=.039, earTilt=.048;
+        surface(6,10,(u,v)=>{
+          const ang=u*tau,skin=Math.pow(Math.max(.001,Math.sin(Math.PI*v)),.55);
+          const grain=1+.047*Math.cos(ang*10+v*.31);
+          return [ex+earTilt*dx*v+Math.cos(ang)*earR*skin*grain,
+            earY+v*earH,ez+earTilt*dz*v+Math.sin(ang)*earR*skin*grain];
+        },'#c2a663',leafMat);
+        for(let k=0;k<3;k++){
+          const aa=a+(k-1)*.75;
+          leaf(ex+Math.cos(aa)*.019,earY+.003,ez+Math.sin(aa)*.019,aa,.067,.037,earH*(.76+.07*k),.062,'#899457');
+        }
+        // Branched pollen tassels with fine dangling anthers at the stem tips.
+        for(let k=0;k<5;k++){
+          const aa=a+k*tau/5,xx=x+Math.cos(aa)*.099,zz=z+Math.sin(aa)*.099;
+          const tipY=y+h+.078+.023*(k%2);
+          beam([x,y+h*.934,z],[xx,tipY,zz],.0045,'#b4a06c');
+          for(let n=1;n<4;n++){
+            const t=n/4,tx=lerp(x,xx,t),ty=lerp(y+h*.934,tipY,t),tz=lerp(z,zz,t);
+            g.polygon([[tx,ty,tz],[tx+.004,ty-.025,tz+.008],[tx+.009,ty-.015,tz+.013]],
+              '#c6ac6b',leafMat,[dx*.3,.85,dz*.3]);
+          }
         }
       }
     } else if(crop==='tomato') {
@@ -2160,14 +3146,20 @@ function buildFarm(g, plots, story = {}) {
           }
         }
         if(ready && i%2===0) {
-          const radius=h*between(.105,.142);
-          ball(tx,yy+len*.10,tz,radius,radius*.94,radius,i%4?'#b85336':'#ae4e36',leafMat);
-          for(let f=0;f<3;f++)leaf(tx,yy+len*.10+radius*.46,tz,a+f*2.09,radius*.44,radius*.087,-radius*.15,.004,'#687846');
+          const diameter=h*between(.110,.154),cr=.5*diameter,fruitY=yy+len*.07;
+          // The pedicel bends downward under the fruit's weight.
+          const joint=[tx+dx*.012,fruitY+cr*1.21,tz+dz*.012];
+          beam([lerp(x,tx,.86),yy+len*.20,lerp(z,tz,.86)],joint,h*.006,'#6b7849',leafMat);
+          beam(joint,[tx,fruitY+cr*.72,tz],h*.007,'#6b7849',leafMat);
+          tomato(tx,fruitY,tz,cr,a, i%4?'#aa4935':'#b6573a');
         }
       }
     } else {
       const h=ready ? .34 : wet ? .22 : .10;
-      if(ready) cyl(x,y+.015,z,.050,.032,.055,10,'#bb824d',soilMat);
+      if(ready)surface(4,9,(u,v)=>{
+        const a=tau*u,rr=.046*Math.sin((v*.95+.025)*Math.PI*.95)**.60;
+        return[x+Math.cos(a)*rr,y-.027+.063*v,z+Math.sin(a)*rr];
+      },'#b98350',soilMat);
       for(let i=0;i<(ready?7:4);i++) {
         const a=rotation+i*2.399,dx=Math.cos(a),dz=Math.sin(a);
         const rise=h*between(.58,1.0),reach=h*between(.29,.67),yy=y+.025;
@@ -2175,8 +3167,15 @@ function buildFarm(g, plots, story = {}) {
         for(let k=1;k<=4;k++){
           const t=k/4.5, cx=x+dx*reach*t,cz=z+dz*reach*t,cy=yy+rise*t;
           for(const side of [-1,1]){
-            leaf(cx,cy,cz,a+side*.90,h*(.23-.125*t),h*.024,h*.105,.004,
-              i%2?'#697c4d':'#7b8a58');
+            const aa=a+side*.91,dl=h*(.235-.122*t),ex=cx+Math.cos(aa)*dl,ez=cz+Math.sin(aa)*dl;
+            // Finely divided carrot leaflets widen around the middle of each frond.
+            leaf(cx,cy,cz,aa,dl,h*.011,h*.092,.004,i%2?'#6b8250':'#798d58');
+            if(ready)for(const tipSide of [-1,1]){
+              const bx=lerp(cx,ex,.59),bz=lerp(cz,ez,.59),end=aa+tipSide*.73,rad=dl*.48;
+              g.polygon([[bx,cy+h*.037,bz],[bx+.003,cy+h*.052,bz+.002],
+                [bx+Math.cos(end)*rad,cy+h*.124,bz+Math.sin(end)*rad]],
+                i%2?'#71874f':'#7f9058',leafMat,[.11,.96,.15]);
+            }
           }
         }
       }
@@ -2210,11 +3209,27 @@ function buildFarm(g, plots, story = {}) {
           wet?'#675747':'#84715a',soilMat,[0,1,0]);
       }
     }
+    // Organic mulch, small soil clods and worn rim joints show the scale up close.
+    for(let n=0;n<57;n++){
+      const xx=x+between(-1.20,1.20),zz=z+between(-.80,.80),dx=xx-x,dz=zz-z;
+      const ridge=Math.exp(-22*Math.sin(dz*Math.PI/.52)**2);
+      const gy=.155+ridge*.081+.005*Math.sin(dx*16+dz*15)+.006*Math.cos(dx*8-dz*28);
+      const r=between(.011,.035),a=n*2.399,ca=Math.cos(a),sa=Math.sin(a);
+      const apex=[xx+.12*r,gy+r*.32,zz],base=[];
+      for(let k=0;k<5;k++){
+        const angle=k*tau/5;const u=Math.cos(angle)*r,v=Math.sin(angle)*r*.62;
+        base.push([xx+u*ca-v*sa,gy-.003,zz+u*sa+v*ca]);
+      }
+      for(let k=0;k<5;k++)g.polygon([base[k],apex,base[(k+1)%5]],n%5?(wet?'#655541':'#827058'):'#979280',soilMat);
+    }
     if(plot.stage==='empty'||!plot.stage)return;
     for(let row=0;row<3;row++)for(let col=0;col<5;col++) {
       const variant=5*row+col,xx=x+(col-2)*.478+.029*Math.sin(variant*2.39);
       const zz=z+(row-1)*.52+.023*Math.cos(variant*4.07);
-      plant(xx,.221,zz,plot.crop,plot.stage,variant);
+      const dx=xx-x,dz=zz-z;
+      const ridge=.155+.081*Math.exp(-22*Math.sin(dz*Math.PI/.52)**2);
+      const ground=ridge+.005*Math.sin(dx*16+dz*15)+.006*Math.cos(dx*8-dz*28);
+      plant(xx,ground-.009,zz,plot.crop,plot.stage,variant);
     }
   }
   function duck(x,z,a) {
@@ -2300,9 +3315,58 @@ function buildFarm(g, plots, story = {}) {
         batten([tipX,tipY,zz],[x0+.69,2.08,zz+.22],.034,'#786d57');
         batten([peak,ridge,zz],[x1,eave,zz],.039);
       }
+      // Mortise knees carry each rafter onto its post. Patinated, bolted side plates
+      // bridge the joint; no plates span the unrepaired missing roof bay.
+      for(const side of [-1,1]){
+        const ex=side<0?tipX:x1,ey=side<0?tipY:eave,ix=ex-side*.252;
+        const plateZ=zz+.036,good=stage>0||j!==2;
+        if(good||side>0){
+          const iy=roofHeight(ix)-.065;
+          batten([ex,ey-.31,zz],[ix,iy-.06,zz],.027,'#8e7d60',wood);
+          const points=[[ex,ey-.126,plateZ],[ex,ey+.021,plateZ],[ix,iy+.085,plateZ],[ex-side*.078,ey-.048,plateZ]];
+          g.polygon(points,'#74796b',metal,[0,0,1]);
+          for(const [px,py] of [[ex,ey-.073],[ex-side*.10,ey+.014]]){
+            cyl(px,py,plateZ+.008,.012,.012,.012,6,'#9b9c89',{rx:Math.PI*.5,mat:'metal'});
+          }
+        }
+      }
       if(j===sections)break;
       const mid=zz+span*.5;
-      // Fine leading and narrow sky reflections imply glass while preserving views through each pane.
+      // Individual panes are inset behind the muntins. Several pieces survive in the
+      // ruined shell, while restoration fills the gaps with newly cut glass.
+      for(const side of [-1,1]) {
+        const wallX=side<0?x0:x1;
+        const wNormal=[side,0,0],zA=zz+.044,zB=zz+span-.044;
+        for(let halfPane=0;halfPane<2;halfPane++){
+          const za=halfPane?mid+.012:zA,zb=halfPane?zB:mid-.012;
+          for(let row=0;row<2;row++){
+            const low=row?1.223:.565,hi=row?eave-.050:1.161;
+            if(stage===0 && (j+row*3+halfPane+(side<0?0:2))%4===0)continue;
+            const paneX=wallX+side*.010;
+            g.polygon([[paneX,low,za],[paneX,hi,za],[paneX,hi,zb],[paneX,low,zb]],'#899f93',glass,wNormal);
+          }
+        }
+        const r1=side<0?x0+.036:peak+.025, r2=side<0?peak-.023:x1-.034;
+        const nz=V3.unit([roofHeight(r1)-roofHeight(r2),r2-r1,0]);
+        if(stage>0||(j+(side>0?2:0))%3!==1){
+          // The roof's middle section has a brass-hinged opening light with a prop.
+          const vent=stage>0&&j===3&&side<0, hx=vent?lerp(r1,r2,.52):r1;
+          const pane=(left,right,zA,zB,liftLeft=0)=>g.polygon([
+            [left,roofHeight(left)+.015+liftLeft,zA],[left,roofHeight(left)+.015+liftLeft,zB],
+            [right,roofHeight(right)+.015,zB],[right,roofHeight(right)+.015,zA]],
+            '#a7b3a4',glass,nz);
+          pane(r1,hx===r1?r2:hx,zA,zB);
+          if(vent){
+            pane(hx,r2,zA,zB,.17);
+            batten([hx,roofHeight(hx)+.185,zA],[hx,roofHeight(hx)+.185,zB],.012,'#83897a');
+            for(const vz of [zA,zB]){
+              batten([hx,roofHeight(hx)+.183,vz],[r2,roofHeight(r2)+.023,vz],.011,'#7d8376');
+              batten([hx-.052,roofHeight(hx)-.015,vz],[hx+.063,roofHeight(hx)+.155,vz],.008,'#9e936c',{mat:'brass'});
+            }
+          }
+        }
+      }
+      // Glazing bars and the rebated edge of the panes catch a narrow sky reflection.
       if(stage>0||j%3!==1) {
         for(const xx of [x0,x1]){
           batten([xx,.49,mid],[xx,eave,mid],.011,'#7b8275');
@@ -2323,6 +3387,14 @@ function buildFarm(g, plots, story = {}) {
         batten([xx,.12,endZ],[xx,roofHeight(xx),endZ],doorPost?.047:.033,doorPost?oak:iron,doorPost?wood:metal);
       }
       box((x0+x1)/2,eave,endZ,x1-x0,.12,.099,oak,wood);
+      for(const [left,right] of [[x0+.066,7.46],[8.62,x1-.065]]) {
+        if(stage>0||endZ===z0) {
+          const oz=endZ+.008, top=eave-.069;
+          for(const [lo,hi] of [[.476,1.16],[1.225,top]]){
+            g.polygon([[left,lo,oz],[right,lo,oz],[right,hi,oz],[left,hi,oz]],'#99ab9f',glass,[0,0,endZ===z0?-1:1]);
+          }
+        }
+      }
       for(const [a,b] of [[x0,7.49],[8.60,x1]]) {
         box((a+b)/2,.34,endZ,b-a,.23,.093,aged,wood);
         box((a+b)/2,1.19,endZ,b-a,.049,.050,iron,metal);
@@ -2336,6 +3408,17 @@ function buildFarm(g, plots, story = {}) {
     }
     batten([hinge[0],.21,hinge[2]],[outer[0],1.05,outer[2]],.027,aged,wood);
     ball(outer[0]-.06,1.02,outer[2]+.021,.067,.041,.057,'#817957',{mat:'brass'});
+    for(const yy of [.39,1.59]){
+      cyl(hinge[0]+.026,yy,hinge[2]+.023,.018,.018,.106,10,'#8a8470',{mat:'brass'});
+      box(hinge[0]-.028,yy,hinge[2]+.043,.08,.064,.014,'#7b7b67',metal);
+    }
+    // Worn slate flags follow the working aisle to the potting table.
+    for(let k=0;k<7;k++){
+      const xx=8.11+.034*Math.sin(k*3.0),zz=-3.92-k*.557,w=.31+.025*Math.cos(k);
+      const corners=[[-w,-.203],[-w*.78,-.258],[w*.84,-.248],[w,-.135],[w*.89,.220],
+        [-w*.71,.257],[-w,.138]].map(([dx,dz])=>[xx+dx,.055,zz+dz]);
+      g.polygon(corners,k%2?'#9d9b88':'#8e9385',stone,[0,1,0]);
+    }
     // June's envelope rests on the solid bench apron at the entry.
     box(7.12,.852,-3.40,.84,.085,.40,oak,wood);
     for(const xx of [6.80,7.43])for(const zz of [-3.53,-3.27]){
@@ -2487,7 +3570,10 @@ function buildFarm(g, plots, story = {}) {
   box(2.65,.66,-3.34,.13,.036,.082,'#82918a',{ry:.44,mat:'metal'});
   const meadowSeed = scenerySeed;
   const centers=[[0,.5],[3.2,.5],[0,3.15],[3.2,3.15]];
-  centers.forEach(([x,z],i)=>plantingBed(x,z,plots?.[i] || {stage:'empty',crop:'carrot'}));
+  centers.forEach(([x,z],i)=>{
+    scenerySeed=708173+i*25111;
+    plantingBed(x,z,plots?.[i] || {stage:'empty',crop:'carrot'});
+  });
   scenerySeed = meadowSeed;
   // Soft borders of fescue, clover and flowering weeds fill the gaps around the vegetable rows.
   for(const [cx,cz,w,d,count] of [
@@ -3190,7 +4276,7 @@ function syncHint(){
 function useFocused(){if(aimed){activate(aimed.key);return}const near=stations().map(s=>[Math.hypot(player.x-s.walk[0],player.z-s.walk[1]),s]).sort((a,b)=>a[0]-b[0])[0];if(near&&near[0]<1.2)activate(near[1].key);else toast('Face a nearby object to use it. Tab opens the dashboard.')}
 function syncCamera(){if(!renderer)return;renderer.setPose(player.x,player.z,player.yaw,player.pitch,1.66+bob)}
 function refreshPlace(){
- if(!renderer)return;renderer.weather=dispatch().sky;renderer.build(state.world==='farm',state.plots,state.story);renderer.fov=state.fov||70;renderer.quality=state.quality||2;syncCamera();renderer.render();syncHint()
+ if(!renderer)return;renderer.weather=dispatch().sky;renderer.build(state.world==='farm',state.plots,state.story);renderer.updatePanels(state.stocks);renderer.fov=state.fov||70;renderer.quality=state.quality||2;syncCamera();renderer.render();syncHint()
 }
 function spawnPose(){return state.world==='city'?{x:1.18,z:3.43,yaw:-.22,pitch:-.075}:{x:-1.72,z:6.63,yaw:.04,pitch:-.10}}
 function setupWorld(restore=false){
@@ -3239,7 +4325,7 @@ function frame(now){
    if(renderer){soundscape.listener?.(player.x,player.z,player.yaw);renderer.clock=ambientClock;if(renderer.effect)renderer.dirty=true;if(!renderer.isSoftware&&ambientClock-lastAmb>.16&&!modal){renderer.dirty=true;lastAmb=ambientClock}if(renderer.render())syncHint()}
    if(simClock>=1){simClock=0;if(ripen()){persist();if(state.world==='farm')refreshPlace();updateHUD();if(modal==='plot')renderModal()}
      if(modal==='plot'&&$('#grow-time'))$('#grow-time').textContent=Math.max(0,Math.ceil((state.plots[selectedBed].ripeAt-Date.now())/1000))}
-   if(quoteClock>=16&&modal!=='desk'&&!travelBusy){quoteClock=0;priceTick();if(state.world==='city')state.dayMinute=Math.min(1439,state.dayMinute+3);else state.farmMinute=Math.min(1080,(state.farmMinute||390)+3);rememberPose();persist();updateHUD();if(modal==='portfolio')renderModal()}
+   if(quoteClock>=16&&modal!=='desk'&&!travelBusy){quoteClock=0;priceTick();if(state.world==='city'){renderer.updatePanels(state.stocks);state.dayMinute=Math.min(1439,state.dayMinute+3)}else state.farmMinute=Math.min(1080,(state.farmMinute||390)+3);rememberPose();persist();updateHUD();if(modal==='portfolio')renderModal()}
  }requestAnimationFrame(frame)
 }
 function boot(){wireUI();ripen();try{renderer=new Renderer($('#scene'))}catch(e){console.warn('Using the software 3D renderer:',e);const replacement=$('#scene').cloneNode(false);$('#scene').replaceWith(replacement);renderer=new SoftwareRenderer(replacement)}

@@ -53,7 +53,7 @@ function syncHint(){
 function useFocused(){if(aimed){activate(aimed.key);return}const near=stations().map(s=>[Math.hypot(player.x-s.walk[0],player.z-s.walk[1]),s]).sort((a,b)=>a[0]-b[0])[0];if(near&&near[0]<1.2)activate(near[1].key);else toast('Face a nearby object to use it. Tab opens the dashboard.')}
 function syncCamera(){if(!renderer)return;renderer.setPose(player.x,player.z,player.yaw,player.pitch,1.66+bob)}
 function refreshPlace(){
- if(!renderer)return;renderer.weather=dispatch().sky;renderer.build(state.world==='farm',state.plots,state.story);renderer.fov=state.fov||70;renderer.quality=state.quality||2;syncCamera();renderer.render();syncHint()
+ if(!renderer)return;renderer.weather=dispatch().sky;renderer.build(state.world==='farm',state.plots,state.story);renderer.updatePanels(state.stocks);renderer.fov=state.fov||70;renderer.quality=state.quality||2;syncCamera();renderer.render();syncHint()
 }
 function spawnPose(){return state.world==='city'?{x:1.18,z:3.43,yaw:-.22,pitch:-.075}:{x:-1.72,z:6.63,yaw:.04,pitch:-.10}}
 function setupWorld(restore=false){
@@ -102,7 +102,7 @@ function frame(now){
    if(renderer){soundscape.listener?.(player.x,player.z,player.yaw);renderer.clock=ambientClock;if(renderer.effect)renderer.dirty=true;if(!renderer.isSoftware&&ambientClock-lastAmb>.16&&!modal){renderer.dirty=true;lastAmb=ambientClock}if(renderer.render())syncHint()}
    if(simClock>=1){simClock=0;if(ripen()){persist();if(state.world==='farm')refreshPlace();updateHUD();if(modal==='plot')renderModal()}
      if(modal==='plot'&&$('#grow-time'))$('#grow-time').textContent=Math.max(0,Math.ceil((state.plots[selectedBed].ripeAt-Date.now())/1000))}
-   if(quoteClock>=16&&modal!=='desk'&&!travelBusy){quoteClock=0;priceTick();if(state.world==='city')state.dayMinute=Math.min(1439,state.dayMinute+3);else state.farmMinute=Math.min(1080,(state.farmMinute||390)+3);rememberPose();persist();updateHUD();if(modal==='portfolio')renderModal()}
+   if(quoteClock>=16&&modal!=='desk'&&!travelBusy){quoteClock=0;priceTick();if(state.world==='city'){renderer.updatePanels(state.stocks);state.dayMinute=Math.min(1439,state.dayMinute+3)}else state.farmMinute=Math.min(1080,(state.farmMinute||390)+3);rememberPose();persist();updateHUD();if(modal==='portfolio')renderModal()}
  }requestAnimationFrame(frame)
 }
 function boot(){wireUI();ripen();try{renderer=new Renderer($('#scene'))}catch(e){console.warn('Using the software 3D renderer:',e);const replacement=$('#scene').cloneNode(false);$('#scene').replaceWith(replacement);renderer=new SoftwareRenderer(replacement)}

@@ -25,28 +25,101 @@ function buildPenthouse(g) {
     for (const s of [-1,1]) for (const t of [-1,1])
       box(x+s*width/2,(top+bottom)/2,z+t*depth/2,thickness,top-bottom,thickness,color,metal);
   }
+  // Sweep a small circular section along a sewn seam, branch or furniture rail.
+  function sweep(path,radius,color,material,segments=24,sides=6) {
+    const points=Array.from({length:segments+1},(_,i)=>path(i/segments));
+    const frames=points.map((p,i)=>{
+      const tangent=V3.unit(V3.sub(points[Math.min(segments,i+1)],points[Math.max(0,i-1)]));
+      const side=V3.unit(V3.cross(tangent,Math.abs(tangent[1])>.94?[0,0,1]:[0,1,0]));
+      return [side,V3.cross(side,tangent)];
+    });
+    sheet(segments,sides,(u,v)=>{
+      const i=Math.round(v*segments),r=typeof radius==="function"?radius(v):radius;
+      const a=u*Math.PI*2;return points[i].map((q,k)=>q+r*(frames[i][0][k]*Math.cos(a)+frames[i][1][k]*Math.sin(a)));
+    },color,material);
+  }
+  const power=(v,e)=>Math.sign(v)*Math.pow(Math.abs(v),e);
+  const clamp01=v=>Math.max(0,Math.min(1,v));
+  const ease=v=>{v=clamp01(v);return v*v*(3-2*v)};
+  function paddedForm(cfg) {
+    const {x,y,z,w,d,h,color,material=creamLinen,rx=0,ry=0,rz=0,
+      seamColor=color,padding=.40,compression=.025,seed=0,thickness=.005}=cfg;
+    const roll=rotator({rx,ry,rz});
+    // Equal-distance sampling avoids wide triangular fans down the broad sides of a pillow.
+    const outline=Array.from({length:321},(_,k)=>{
+      const a=k*Math.PI/160;return [w*.5*power(Math.cos(a),padding),d*.5*power(Math.sin(a),padding),a];
+    });
+    const lengths=[0];for(let k=1;k<outline.length;k++)lengths.push(lengths[k-1]+Math.hypot(outline[k][0]-outline[k-1][0],outline[k][1]-outline[k-1][1]));
+    function at(az){
+      const distance=az*lengths[320];let low=0,high=320;
+      while(high-low>1){const mid=(low+high)>>1;if(lengths[mid]>distance)high=mid;else low=mid;}
+      const f=(distance-lengths[low])/(lengths[high]-lengths[low]||1);
+      return outline[low].map((q,i)=>q+(outline[high][i]-q)*f);
+    }
+    const point=(az,rad,side)=>{
+      const [px,pz,a]=at(az);
+      const xx=px*rad,zz=pz*rad,corner=Math.pow(Math.abs(Math.sin(2*a)),3);
+      const crown=Math.sqrt(Math.max(0,1-rad**4))*(.99-.19*rad**4*corner);
+      const cradle=side>0?compression*Math.exp(-((xx/w+.10)**2/.09+(zz/d-.12)**2/.15)):0;
+      const pucker=.12*h*Math.sin(15*a+seed+rad*4.1)*Math.pow(rad,6)*(1-rad)*2.7*corner;
+      const yy=side*(.5*h*crown+pucker)-cradle*(1-rad*rad);
+      const local=roll([xx,yy,zz]);
+      return [x+local[0],y+local[1],z+local[2]];
+    };
+    const rings=w<.15?24:44;
+    for(const side of [-1,1]){
+      const core=.052,divs=side>0?rings:Math.round(rings*.72);
+      const layers=w<.15?6:side>0?11:6;
+      sheet(layers,divs,(u,v)=>point(side>0?1-u:u,core+(1-core)*Math.sin(v*Math.PI/2),side),color,material);
+      const ring=Array.from({length:divs},(_,k)=>point(side>0?1-k/divs:k/divs,core,side));
+      g.polygon(ring,color,material,roll([0,side,0]));
+    }
+    sweep(t=>point(t,1,1),thickness,seamColor,material,rings,5);
+  }
   function pot(x,y,z,r,h,color) {
-    cyl(x,y+h*.47,z,r*.95,r*.76,h*.92,14,color,stone);
-    cyl(x,y+h*.90,z,r,r*.96,h*.16,14,color,stone);
-    cyl(x,y+h*.997,z,r*.85,r*.85,.012,14,"#493b33");
-    return y+h;
+    const sections=[[.65,0],[.78,.025],[.80,.065],[.85,.16],[.93,.58],[1,.90],[1.01,.955],
+      [.995,.981],[.96,1],[.90,.995],[.889,.966],[.872,.92]];
+    sheet(sections.length-1,36,(u,v)=>{
+      const [rad,ht]=sections[Math.round(v*(sections.length-1))],a=2*Math.PI*u;
+      return [x+r*rad*Math.cos(a),y+h*ht,z+r*rad*Math.sin(a)];
+    },color,{mat:"ceramic"});
+    cyl(x,y+h*.925,z,r*.873,r*.872,.006,28,"#51483a",{mat:"soil"});
+    return y+h*.926;
   }
   function plant(x,y,z,size,potColor,compact=false) {
-    const h = pot(x,y,z,.29*size,.53*size,potColor);
-    const greens=["#365147","#4b6150","#49644b","#61735b","#536d55"];
-    const count=compact?8:13;
-    for(let i=0;i<count;i++){
-      const a=i*2.399+g.rand()*.45,dx=Math.cos(a),dz=Math.sin(a);
-      const reach=size*(.17+g.rand()*.36), tall=size*((compact?.32:.67)+g.rand()*(compact?.27:.66));
-      const q=[x+dx*reach,h+tall,z+dz*reach];
-      rod([x,h,z],q,.009*size,"#5f7052");
-      const lf=size*(.39+g.rand()*.23),lw=size*(compact?.095:.15);
-      sheet(9,6,(u,v)=>{
-        const along=v*lf,across=(u*2-1)*lw*Math.pow(Math.sin(v*Math.PI),.72);
-        return [q[0]+dx*along-dz*across,q[1]+lf*(.53*Math.sin(v*Math.PI)-.35*v)-Math.abs(across)*.25,q[2]+dz*along+dx*across];
-      },pick(greens),{mat:"plain"});
-      const p1=[q[0]+dx*lf*.35,q[1]+lf*.31,q[2]+dz*lf*.35];
-      rod(q,p1,size*.0047,"#8a9172");
+    const height=pot(x,y,z,(compact?.164:.215)*size,(compact?.305:.409)*size,potColor);
+    const greens=["#435f4b","#56714f","#627b54","#47684e","#637e57"];
+    const trunks=compact?2:3;
+    for(let branch=0;branch<trunks;branch++){
+      const theta=branch*2.40+.35,dx=Math.cos(theta),dz=Math.sin(theta);
+      const stemHeight=size*(compact?.37:.93)*(1-.16*branch),lean=size*(compact?.070:.115)*(branch+.40);
+      const trunk=t=>[x+dx*(lean*t*t+.013*size*Math.sin(3*t+theta)),
+        height+stemHeight*t,z+dz*lean*t+.018*size*Math.sin(2.4*t+branch)];
+      sweep(trunk,t=>size*(compact?.009:.017)*(1-.82*t),"#796d52",{mat:"bark"},14,7);
+      const leaves=compact?5:8;
+      for(let k=0;k<leaves;k++){
+        const fraction=.22+.74*k/(leaves-1),at=trunk(fraction);
+        const a=k*2.32+theta+.27*g.rand(),ax=Math.cos(a),az=Math.sin(a);
+        const length=size*(compact?.138:.249)*(.8+.34*g.rand()),width=length*(.208+.045*g.rand());
+        const petiole=size*(compact?.044:.085)*(.85+.34*g.rand()),roll=.22*(g.rand()-.45);
+        const q=[at[0]+petiole*ax,at[1]+.59*petiole,at[2]+petiole*az];
+        sweep(t=>[at[0]+ax*petiole*t,at[1]+petiole*(.88*t-.29*t*t),at[2]+az*petiole*t],
+          t=>size*.0048*(1-.43*t),"#667656",{},4,5);
+        const shape=(u,t)=>{
+          const r=u*2-1,spine=length*t,blade=width*Math.sin(Math.PI*t)**.83*(1.16-.34*t);
+          const lateral=r*blade,curve=length*(.34*Math.sin(t*2.74)-.19*t*t);
+          const fold=Math.abs(r)**.68*blade*.26+r*blade*roll+.011*size*r*r*Math.sin(t*8.2+k);
+          return [q[0]+ax*spine-az*lateral,q[1]+curve-fold,q[2]+az*spine+ax*lateral];
+        };
+        sheet(10,6,(u,t)=>shape(1-u,t),pick(greens),{mat:"leaf"});
+        sweep(t=>{const p=shape(.5,t);p[1]+=.001*size;return p;},t=>.0016*size*(1-.82*t),"#87946b",{},7,4);
+        for(const sign of [-1,1]) for(const split of [.32,.63]){
+          sheet(1,3,(u,v)=>{
+            const p=shape(.5+sign*(.003+.36*u+.006*v),split+.11*u);
+            p[1]+=.00085*size;return p;
+          },"#788966",{mat:"leaf"});
+        }
+      }
     }
   }
   function ceramic(x,y,z,s,c) {
@@ -238,66 +311,99 @@ function buildPenthouse(g) {
   ceramic(-5.70,.90,1.31,.53,"#d1b69b");
   book(-5.7,.90,3.13,.46,.065,.43,coverColors[0]);
 
-  // Upholstered bedstead, piping and independently draped bed linens.
-  round(-4.44,.026,-2.08,3.36,.030,3.65,.011,"#8c8a7b",fabric);
-  legs(-4.44,-2.12,2.13,2.24,.055,.24,.073,"#514237");
-  round(-4.44,.261,-2.14,2.54,.25,2.81,.073,"#837568",fabric);
-  round(-4.44,.469,-2.10,2.44,.29,2.67,.119,"#d4cebf",creamLinen);
-  round(-4.44,.722,-3.62,2.77,1.23,.15,.074,"#84796a",fabric);
-  for(let i=0;i<7;i++) round(-5.58+i*.38,.754,-3.525,.370,1.03,.105,.044,"#aca08b",creamLinen);
-  for(const side of [-1,1]){
-    box(-4.44+side*1.222,.56,-2.08,.008,.012,2.44,"#aca89b",creamLinen);
-    box(-4.44,.56,-2.10+side*1.33,2.16,.011,.009,"#aead9e",creamLinen);
+  // The mattress rests on a continuous recessed plinth; all bedding is supported by its crown.
+  const bedX=-4.44,bedZ=-2.10;
+  round(bedX,.022,bedZ,3.32,.022,3.61,.009,"#928f7e",fabric);
+  round(bedX,.120,bedZ,2.21,.179,2.47,.058,"#645849",{mat:"walnut"});
+  round(bedX,.237,bedZ,2.53,.235,2.77,.070,"#887c6b",fabric);
+  round(bedX,.461,bedZ,2.41,.287,2.66,.091,"#d8d2c4",creamLinen);
+  const mattressLoop=t=>{
+    const a=t*2*Math.PI;return [bedX+1.205*power(Math.cos(a),.15),.544,bedZ+1.332*power(Math.sin(a),.15)];
+  };
+  sweep(mattressLoop,.0063,"#c2bbad",creamLinen,72,6);
+  // A continuous winged headboard, tucked into shallow vertical channels.
+  const panel=(s,t,back=false)=>{
+    const x=(s-.5)*2.74,edge=Math.abs(x)/1.37,top=1.29+.10*(1-edge**5),y=.20+(top-.20)*t;
+    const channel=.012*Math.exp(-((Math.sin((s*6+.23)*Math.PI))**2)/.017)*Math.sin(Math.PI*t)**.38;
+    const z=-3.539-.073*t+.190*edge**5+.036*Math.sin(Math.PI*t)-channel;
+    return [bedX+x,y,z-(back?.127:0)];
+  };
+  sheet(18,70,(u,v)=>panel(1-u,v),"#a79981",creamLinen);
+  sheet(5,40,(u,v)=>panel(u,v,true),"#897d69",fabric);
+  function join(a,b,n,m,c,mat) {
+    sheet(n,m,(u,v)=>{const p=a(u),q=b(u);return p.map((x,i)=>x+(q[i]-x)*v);},c,mat);
   }
-  function pillow(cx,cy,cz,w,h,d,color,yaw=0,lift=.10){
-    const ca=Math.cos(yaw),sa=Math.sin(yaw);
-    function shape(u,v){
-      const phi=(u-.5)*Math.PI,theta=v*Math.PI*2;
-      const power=(a,e)=>Math.sign(a)*Math.pow(Math.abs(a),e);
-      const xp=w*.5*power(Math.cos(phi),.54)*power(Math.cos(theta),.42);
-      const zp=d*.5*power(Math.cos(phi),.54)*power(Math.sin(theta),.42);
-      const t=power(Math.sin(phi),.72);
-      const creases=.009*Math.sin(xp*36+zp*8)*Math.cos(zp*12)*Math.abs(xp/w)*2;
-      return [cx+xp*ca-zp*sa,cy+h*.5*t-lift*zp/d+creases,cz+xp*sa+zp*ca];
-    }
-    sheet(13,27,shape,color,creamLinen);
-    let last=shape(.52,0);
-    for(let k=1;k<=32;k++){const next=shape(.52,k/32);rod(last,next,.007,color,creamLinen);last=next;}
+  for(const v of [0,1]){
+    join(u=>panel(u,v),u=>panel(u,v,true),2,50,"#9c8e76",creamLinen);
+    sweep(t=>panel(t,v),.006,"#c5b49a",creamLinen,48,5);
   }
-  pillow(-5.03,.696,-3.028,1.02,.29,.63,"#e9e2d4",-.061,.13);
-  pillow(-3.86,.701,-3.039,1.03,.28,.63,"#e3dccb",.042,.13);
-  pillow(-5.01,.717,-2.699,.69,.21,.41,"#b3b0a1",.082,.10);
-  pillow(-3.89,.722,-2.712,.70,.19,.43,"#b5b0a0",-.058,.10);
-  // v indexes the spread across the bed, u the distance towards its foot.
-  function comforter(u,v){
-    const t=v*2-1, ax=Math.abs(t);
-    const dropX=Math.max(0,(ax-.876)/.124),dropZ=Math.max(0,(u-.908)/.092);
-    const edge=Math.max(dropX,dropZ);
-    const x=-4.44+Math.sign(t)*(Math.min(ax,.876)*1.39+Math.sin(dropX*Math.PI/2)*.091);
-    const z=-2.65+Math.min(u,.908)*2.22+.114*Math.sin(dropZ*Math.PI/2)+.027*Math.cos(t*3.4+u*2);
-    const folds=.016*Math.sin(t*10+u*4)+.013*Math.cos(t*17-u*7)*(.3+u*.7)+.009*Math.sin(t*31+u*11);
-    const gathered=.046*Math.exp(-Math.pow((u-.12-.038*Math.sin(t*4))/.069,2));
-    return [x,.716+.052*Math.cos(t*1.4)*(1-u*.35)+folds+gathered-.272*edge,z];
+  for(const u of [0,1])join(t=>panel(u,t),t=>panel(u,t,true),2,16,"#958771",creamLinen);
+  // Rounded corner and resting side drop, measured along the cloth in metres.
+  function foldOver(q,edge,r){
+    const beyond=Math.max(0,q-edge),turn=Math.min(Math.PI/2,beyond/r);
+    return [Math.min(q,edge)+r*Math.sin(turn),r*(1-Math.cos(turn))+Math.max(0,beyond-r*Math.PI/2)];
   }
-  sheet(38,56,comforter,"#e4ddcb",creamLinen);
-  // The turned-down sheet makes a soft, wandering front edge around the pillows.
-  sheet(9,54,(u,v)=>{
-    const yEdge=.08+.015*Math.sin(v*9);const q=comforter(u*yEdge,v);
-    q[1]+=.022+.029*Math.sin(Math.PI*u);return q;
-  },"#e9e3d5",creamLinen);
-  function throwCloth(u,v){
-    const along=.62+.22*u+.025*Math.sin(v*6.2);
-    const q=comforter(along,v);
-    q[1]+=.036+.021*Math.sin(v*19+u*.55)+.016*Math.sin(u*9-v*4);
-    q[2]+=.024*Math.sin(v*11.2);return q;
+  const batting=(s,t)=>{
+    const q=(s-.5)*2.95+.022*t,rawZ=-2.79+t*2.416+.047*Math.cos(s*Math.PI*2+.54)*(1-.65*t);
+    const xx=foldOver(Math.abs(q),1.145,.124),zz=foldOver(rawZ+2.79,1.987,.124);
+    const side=ease(xx[1]/.32),end=ease(zz[1]/.28);
+    const flankRipple=.021*Math.sin(rawZ*12.3+q*1.8)+.009*Math.sin(rawZ*24+q*1.7);
+    const x=bedX+Math.sign(q)*(xx[0]+side*flankRipple+.018*end*side);
+    const z=-2.79+zz[0]+end*(.019*Math.sin(q*8.7+.65)+.013*Math.sin(q*15.7));
+    const near=(center,w)=>Math.exp(-(((rawZ-center)/w)**2));
+    const edgePull=near(-2.49+.102*Math.cos(q*2.6),.095)*(.039+.018*Math.cos(q*3.7));
+    const wrinkle=near(-1.97-.16*q,.095)*.031*Math.exp(-(((q-.46)/.84)**2))
+      +near(-1.43+.087*q,.074)*.022*Math.exp(-(((q+.78)/.51)**2))
+      -.014*near(-2.17+.104*Math.sin(q*3.2),.14);
+    const loft=.023+.019*(1-Math.min(1,(q/1.25)**2))+.009*Math.sin(q*7+rawZ*1.9);
+    const y=.603+loft+edgePull+wrinkle-Math.hypot(xx[1],zz[1])*.91;
+    return [x,y,z];
+  };
+  // Batting thickness follows the local normal, so the quilting reads correctly from the foot.
+  const inner=(s,t)=>{
+    const q=batting(s,t),u=V3.sub(batting(Math.min(s+.0008,1),t),batting(Math.max(s-.0008,0),t));
+    const v=V3.sub(batting(s,Math.min(t+.0008,1)),batting(s,Math.max(0,t-.0008)));
+    const n=V3.unit(V3.cross(v,u)),th=.021+.014*Math.sin(Math.PI*s)*Math.sin(Math.PI*t);
+    return q.map((val,i)=>val-th*n[i]);
+  };
+  sheet(45,60,batting,"#e3dcd0",creamLinen);
+  sheet(12,24,(u,v)=>inner(1-u,v),"#d4cdbf",creamLinen);
+  for(const side of [0,1]){
+    join(t=>batting(side,t),t=>inner(side,t),2,45,"#d7cec0",creamLinen);
+    join(t=>batting(t,side),t=>inner(t,side),2,55,"#d7cec0",creamLinen);
   }
-  sheet(16,52,throwCloth,"#777d73",fabric);
-  for(const u0 of [.055,.083,.895]){
-    sheet(2,45,(u,v)=>{const q=throwCloth(u0+u*.015,v);q[1]+=.003;return q;},"#b4b1a0",fabric);
-  }
-  for(let k=0;k<50;k++){
-    const v=(k+.5)/50,a=throwCloth(1,v);
-    rod(a,[a[0]+.004*Math.sin(k*4),a[1]-.016,a[2]+.055+.014*Math.sin(k*3)],.0028,"#96998a",fabric);
+  // The turned-back edge joins the quilt, rolling around its stuffing into a soft lip.
+  const turn=(u,v)=>{
+    const w=.097+.019*Math.sin(u*5.2),t=.030+w*v;
+    const p=batting(u,t);p[1]+=.010+.038*Math.sin(v*Math.PI)**.85;
+    p[2]+=.016*Math.sin(v*Math.PI);return p;
+  };
+  sheet(10,52,turn,"#ebe4d6",creamLinen);
+  sweep(t=>turn(t,.98),.0038,"#d4c9b7",creamLinen,55,5);
+  // A pair of full sleeping pillows with smaller off-centre accent pillows.
+  paddedForm({x:-5.022,y:.719,z:-3.035,w:1.115,h:.275,d:.644,rx:-.14,ry:-.070,
+    color:"#eae4d8",seamColor:"#cfc6b6",padding:.46,compression:.012,seed:1.3});
+  paddedForm({x:-3.84,y:.714,z:-3.037,w:1.065,h:.27,d:.640,rx:-.16,ry:.082,
+    color:"#e5ddcf",seamColor:"#d2c8b7",padding:.48,compression:.009,seed:3.4});
+  paddedForm({x:-5.02,y:.716,z:-2.694,w:.71,h:.193,d:.44,rx:-.14,ry:.111,
+    color:"#b2ad9c",seamColor:"#a69c86",padding:.52,compression:.009,thickness:.004});
+  paddedForm({x:-3.91,y:.705,z:-2.69,w:.68,h:.198,d:.432,rx:-.18,ry:-.15,
+    color:"#bab3a1",seamColor:"#a79e8a",padding:.50,compression:.008,thickness:.004});
+  // Folded wool runner laid diagonally across the lower third. Its ends follow the side drape.
+  const runner=(s,t)=>{
+    const along=.58+.234*t+.032*Math.sin(s*4.2)-.032*s;
+    const across=.025+s*.975,p=batting(across,along);
+    const rump=.013+.017*Math.sin(s*20+t*.85)**2+.006*Math.sin(s*33+t*2.6);
+    const edge=ease(Math.max(0,Math.abs(across-.5)-.36)/.14);
+    p[0]+=Math.sign(across-.5)*edge*rump;p[1]+=rump*(1-.78*edge);p[2]+=.012*Math.sin(s*9);
+    return p;
+  };
+  sheet(16,52,runner,"#687166",fabric);
+  for(const along of [.048,.086,.892,.928])
+    sheet(2,50,(u,v)=>{const p=runner(u,along+v*.013);p[1]+=.0028;return p;},"#a7aa97",fabric);
+  for(let k=0;k<54;k++){
+    const a=runner((k+.5)/54,1);
+    rod(a,[a[0]+.006*Math.sin(k*2.7),a[1]-.009-.003*Math.sin(k),a[2]+.034+.009*Math.sin(k*1.9)],.0019,"#8e9583",fabric);
   }
   const nightX=-2.48, nightZ=-3.18;
   legs(nightX,nightZ,.56,.48,.02,.33,.067,walnut);
@@ -305,10 +411,26 @@ function buildPenthouse(g) {
   box(nightX,.50,nightZ+.35,.63,.23,.028,"#b28561",wood);
   box(nightX,.51,nightZ+.375,.13,.028,.025,brass,metal);
   box(nightX,.67,nightZ,.82,.07,.72,walnut,wood);
-  cyl(nightX,.74,nightZ-.03,.16,.18,.07,16,brass,metal);
-  cyl(nightX,.93,nightZ-.03,.024,.024,.35,10,brass,metal);
-  cyl(nightX,1.204,nightZ-.03,.16,.30,.34,18,"#f2bf81",{glow:.59});
-  cyl(nightX,1.028,nightZ-.03,.281,.281,.018,18,"#ffd996",amber);
+  cyl(nightX,.734,nightZ-.03,.117,.135,.050,28,"#9c896b",brassMetal);
+  cyl(nightX,.913,nightZ-.03,.016,.019,.319,16,"#aa9573",brassMetal);
+  // A folded linen shade, open underneath, with a rolled brass hem and visible bulb.
+  function lampShade(cx,y,cz,rb,rt,height){
+    sheet(7,88,(u,v)=>{
+      const a=u*2*Math.PI;
+      const rib=.0021*Math.cos(a*22),r=rb+(rt-rb)*v-.010*Math.sin(v*Math.PI)+rib;
+      return [cx+r*Math.cos(a),y+height*v,cz+r*Math.sin(a)];
+    },"#dbc6a3",{mat:"linen",glow:.48});
+    for(const v of [0,1]){
+      const r=v?rt:rb;
+      sweep(t=>[cx+r*Math.cos(t*Math.PI*2),y+height*v,cz+r*Math.sin(t*Math.PI*2)],.0039,"#c5ac85",brassMetal,44,5);
+    }
+    for(let k=0;k<3;k++){
+      const a=k*2*Math.PI/3;
+      rod([cx,y+.019,cz],[cx+rb*.96*Math.cos(a),y+.014,cz+rb*.96*Math.sin(a)],.0027,"#a49478",brassMetal);
+    }
+    orb(cx,y+.055,cz,.074,.096,.074,"#ffe4b9",{mat:"ceramic",glow:.91});
+  }
+  lampShade(nightX,1.043,nightZ-.03,.250,.154,.308);
   book(nightX+.13,.71,nightZ+.19,.27,.042,.19,"#364f53",.12);
 
   // A family photograph and an unsealed letter on the bedside table.
@@ -371,46 +493,7 @@ function buildPenthouse(g) {
     round(5.08,.191+i*.182,-2.902,.542,.173,.026,.009,"#64665b",metal);
     box(5.08,.242+i*.182,-2.883,.178,.015,.020,"#403f38",metal);
   }
-  function monitor(x,z,width,height,style){
-    const center=1.442,front=z+.041;
-    round(x,.818,z+.045,.32,.032,.217,.015,"#4d5050",metal);
-    cyl(x,1.068,z-.026,.027,.027,.47,16,"#72716a",metal);
-    rod([x,1.265,z-.04],[x,1.434,z-.14],.029,"#484d4c",metal);
-    round(x,center,z,width,height,.065,.023,"#232b2e",metal);
-    box(x,center,front-.004,width-.035,height-.034,.014,"#101d25",{mat:"screen",glow:.39});
-    const left=x-width*.463,bottom=center-height*.355,graphW=width*.693,graphH=height*.625;
-    box(x,center+height*.422,front+.006,width-.056,.045,.008,"#25323b",{mat:"screen",glow:.48});
-    for(let i=0;i<5;i++)
-      box(left+graphW*.5,bottom+i*graphH/4,front+.010,graphW,.003,.006,"#34454b",{glow:.49});
-    for(let i=0;i<7;i++)
-      box(left+graphW*i/6,bottom+graphH*.5,front+.010,.0025,graphH,.006,"#2c3d45",{glow:.44});
-    for(let i=0;i<43;i++){
-      const k=i/42, trend=style?.66-.29*k+.12*Math.sin(i*.31):.25+.53*k+.12*Math.sin(i*.27);
-      const y=bottom+graphH*(trend+.056*Math.sin(i*2.01+.27)),col=Math.sin(i*1.73)>.02?"#d89078":"#89c9b6";
-      box(left+k*graphW,y,front+.016,.0037,graphH*(.07+.10*g.rand()),.006,col,{glow:.86});
-      box(left+k*graphW,y,front+.019,graphW*.015,graphH*(.033+.064*g.rand()),.006,col,{glow:.87});
-      const h=.010+g.rand()*.031;
-      box(left+k*graphW,bottom+h*.5,front+.017,graphW*.014,h,.006,"#607e7d",{glow:.60});
-    }
-    box(x+width*.254,center-height*.018,front+.014,.004,height*.737,.007,"#3e4d50",{glow:.5});
-    for(let i=0;i<12;i++){
-      const y=center+height*.315-i*height*.0625;
-      box(x+width*.328,y,front+.016,width*(.05+g.rand()*.06),.007,.006,"#a0ada8",{glow:.72});
-      box(x+width*.422,y,front+.016,width*(.027+g.rand()*.04),.006,.006,i%4===0?"#d49a80":"#95c2af",{glow:.71});
-    }
-    box(x+width*.439,center-height*.482,front+.004,.012,.004,.006,"#7db5a9",{glow:.71});
-  }
-  monitor(3.05,-3.60,1.36,.756,0);
-  monitor(4.48,-3.60,1.36,.756,1);
-  round(3.71,top+.007,-3.016,1.31,.014,.474,.006,"#52574e",leather);
-  round(3.55,.824,-2.99,.545,.031,.186,.013,"#424746",metal);
-  for(let row=0;row<5;row++) for(let key=0;key<(row===4?7:15);key++){
-    const space=row===4&&key===4,w=space?.13:.025;
-    box(3.307+key*.034+(row===4&&key>4?.114:0)+(space?.051:0),.847,-3.063+row*.033,w,.016,.025,
-      key===0&&row===0?"#ac8168":"#9a9d92",metal);
-  }
-  orb(4.13,.833,-2.98,.084,.052,.130,"#b0b2a7",metal);
-  box(4.13,.858,-2.999,.009,.008,.021,"#73786f",metal);
+  buildWorkstation(g,top);
   cup(5.20,top,-2.99,1);
   book(2.55,top,-3.02,.279,.026,.183,"#646f65",-.12);
   // Desk ephemera: a coffee ring, folded sticky note, and a pen left uncapped.
@@ -427,30 +510,65 @@ function buildPenthouse(g) {
   rod([2.11,1.27,-3.44],[2.25,1.45,-3.34],.012,"#a19277",brassMetal);
   cyl(2.26,1.43,-3.33,.047,.130,.11,28,"#696c60",metal);
   cyl(2.26,1.373,-3.33,.122,.122,.007,26,"#ffddac",{glow:.91});
-  // Chair: cast aluminum five-star base, saddle seat and a formed leather back.
+  // Twin-wheel castors swivel under tapered, arched spokes. The pale veneer follows the leather shell.
   const chairX=3.58,chairZ=-1.96;
   for(let i=0;i<5;i++){
-    const a=i*2*Math.PI/5,x=chairX+Math.cos(a)*.318,z=chairZ+Math.sin(a)*.318;
-    rod([chairX,.188,chairZ],[x,.092,z],.024,"#6b6e68",metal);
-    for(const dx of [-.022,.022])
-      cyl(x+dx,.065,z,.05,.05,.028,14,"#343735",{rz:Math.PI/2,mat:"metal"});
+    const a=.22+i*Math.PI*2/5,dx=Math.cos(a),dz=Math.sin(a);
+    const x=chairX+.313*dx,z=chairZ+.313*dz;
+    const cast=t=>[chairX+.31*t*dx,.172-.068*t*t+.008*Math.sin(t*Math.PI),chairZ+.31*t*dz];
+    sweep(cast,t=>.035-.021*t,"#7d8074",metal,10,8);
+    cyl(x,.093,z,.013,.016,.059,12,"#72756b",metal);
+    for(const side of [-1,1]){
+      const wheel=t=>[x+dz*(side*.019+(t-.5)*.024),.047,z-dx*(side*.019+(t-.5)*.024)];
+      sweep(wheel,t=>.043-.004*(2*t-1)**4,"#383e3b",metal,4,18);
+      rod(wheel(0),wheel(1),.025,"#62685c",metal);
+    }
   }
-  cyl(chairX,.285,chairZ,.042,.047,.259,16,"#5a5e57",metal);
-  round(chairX,.420,chairZ,.611,.089,.550,.043,"#5a493d",{mat:"walnut"});
-  round(chairX,.488,chairZ,.583,.114,.525,.056,"#937761",leather);
-  for(const side of [-1,1]){
-    rod([chairX+side*.267,.445,chairZ+.04],[chairX+side*.326,.679,chairZ+.037],.019,"#68695e",metal);
-    round(chairX+side*.323,.687,chairZ+.014,.064,.045,.303,.021,"#795e4b",leather);
-  }
-  round(chairX,.694,chairZ+.24,.074,.398,.055,.024,"#5c5d51",metal);
-  const seatBack=(u,v,offset)=>{
-    const angle=(v-.5)*1.81,profile=.49+.033*Math.sin(u*Math.PI);
-    return [chairX+profile*.84*Math.sin(angle),.672+u*.55,chairZ+.233+profile*.62*(Math.cos(angle)-.64)+.089*u+offset];
+  cyl(chairX,.204,chairZ,.042,.059,.100,22,"#717569",metal);
+  cyl(chairX,.299,chairZ,.028,.028,.160,20,"#a0a69a",metal);
+  round(chairX,.375,chairZ,.189,.086,.245,.024,"#46504b",metal);
+  const seatFit=(s,t)=>{
+    const X=s*2-1,Z=t*2-1;
+    return [chairX+.284*X*(1-.104*Z*Z),.405+.045*X*X-.016*Z+.011*Math.cos(Z*2.3),
+      chairZ+.251*Z*(1-.150*X**4)];
   };
-  sheet(16,25,(u,v)=>seatBack(u,v,0),"#91725b",leather);
-  sheet(16,25,(u,v)=>seatBack(u,v,-.037),"#a08167",leather);
-  for(const v of [0,1])for(let i=0;i<12;i++)rod(seatBack(i/12,v,-.017),seatBack((i+1)/12,v,-.017),.022,"#94745d",leather);
-  for(const u of [0,1])for(let i=0;i<24;i++)rod(seatBack(u,i/24,-.017),seatBack(u,(i+1)/24,-.017),.022,"#94745d",leather);
+  sheet(15,20,seatFit,"#796856",{mat:"walnut"});
+  paddedForm({x:chairX,y:.475,z:chairZ-.008,w:.575,h:.118,d:.512,rx:-.048,color:"#937a62",
+    seamColor:"#ac937a",material:leather,padding:.43,compression:.016,thickness:.0035});
+  for(const side of [-1,1]){
+    const arm=t=>[chairX+side*(.247+.091*Math.sin(Math.PI*.78*t)),.425+.247*t,chairZ-.069+.093*t];
+    sweep(arm,t=>.0165+.0024*Math.cos(Math.PI*t),"#888a7a",metal,12,9);
+    paddedForm({x:chairX+side*.314,y:.679,z:chairZ+.003,w:.070,h:.057,d:.283,
+      color:"#87715d",seamColor:"#99806a",material:leather,padding:.58,compression:0,thickness:.0025});
+  }
+  // Sculpted shell narrows at the waist, bends for lumbar support and curls inward along its sides.
+  function chairBack(s,t,offset=0){
+    const q=s*2-1,a=q*.90;
+    const r=.375+.045*Math.sin(t*Math.PI*.9)+.041*t*t-.028*Math.exp(-((t-.34)**2)/.039);
+    const y=.531+.649*t-.055*Math.abs(q)**4*(t**4)+.021*q*q*(1-t)**2;
+    return [chairX+r*Math.sin(a),y,chairZ+.164+.108*t+.107*t*t+
+      .082*Math.exp(-((t-.30)**2)/.055)-.168*(1-Math.cos(a))/.379+offset];
+  }
+  sheet(23,29,(u,v)=>chairBack(1-u,v),"#735e4d",{mat:"walnut"});
+  sheet(22,28,(u,v)=>chairBack(u,v,-.044),"#88735d",leather);
+  for(const t of [0,1]){
+    join(u=>chairBack(u,t),u=>chairBack(u,t,-.044),3,28,"#b29979",{mat:"walnut"});
+    sweep(u=>chairBack(u,t,-.033),.004,"#a58c71",leather,28,5);
+  }
+  for(const side of [0,1])
+    join(u=>chairBack(side,u),u=>chairBack(side,u,-.044),3,22,"#ad9476",{mat:"walnut"});
+  for(const [lo,hi] of [[.055,.29],[.30,.575],[.586,.956]]){
+    sheet(10,23,(s,t)=>{
+      const p=chairBack(s,lo+(hi-lo)*t,-.044);p[2]-=.036*Math.sin(Math.PI*t)**.50*Math.sin(Math.PI*s)**.46;return p;
+    },"#9c8268",leather);
+  }
+  const strut=t=>[chairX,.350+.493*t,chairZ+.099+.250*Math.sin(t*Math.PI*.54)];
+  sweep(strut,t=>.015+.005*Math.sin(Math.PI*t),"#8a8e80",metal,18,10);
+  for(const t of [.27,.65]){
+    const p=chairBack(.5,t,.008);
+    round(p[0],p[1],p[2],.085,.036,.020,.009,"#8b8c7f",metal);
+    for(const sign of [-1,1])rod([p[0]+sign*.030,p[1],p[2]],[p[0]+sign*.030,p[1],p[2]+.013],.005,"#a5a797",metal);
+  }
   // A handwoven wool rug: narrow selvedges, a broken warp stripe, and short fringe.
   const rugX=2.91,rugZ=1.95;
   box(rugX,.026,rugZ,5.30,.032,3.85,"#a79d87",fabric);
@@ -461,31 +579,70 @@ function buildPenthouse(g) {
     for(let k=0;k<80;k++)
       box(rugX-2.55+k*.064,.034,rugZ+edge*(1.943+g.rand()*.01),.011,.009,.044+g.rand()*.029,"#c0b7a2",fabric);
   }
-  // Low three-seat sofa, upholstered deck, loose foam seats and a right-side chaise.
-  const sx=3.98,sz=.45;
-  legs(sx,sz,3.48,.72,.045,.18,.065,"#5a5043");
-  round(sx,.190,sz,3.98,.123,1.03,.045,"#615748",{mat:"walnut"});
-  round(sx,.302,sz,4.02,.236,1.13,.079,"#647069",fabric);
-  round(sx,.590,sz-.504,4.0,.692,.239,.102,"#778078",fabric);
-  for(let i=0;i<3;i++){
-    const x=sx-1.21+i*1.21;
-    round(x,.467,sz+.06,1.188,.19,.96,.086,"#91978b",fabric);
-    round(x,.740,sz-.302,1.180,.444,.225,.102,"#899084",{rx:-.14,mat:"fabric"});
-    const z=sz+.542;
-    rod([x-.49,.456,z],[x+.49,.456,z],.006,"#9fa196",fabric);
+  // A single upholstered horseshoe surrounds the deep seat, like a curved bent-ply frame.
+  const sx=3.98,sz=.45,backZ=-.064,leftX=sx-1.88,rightX=sx+1.88;
+  const bend=.235,armRun=.827,backRun=rightX-leftX-2*bend,arc=Math.PI*bend/2;
+  const pathLength=armRun*2+arc*2+backRun;
+  function upholsteryPath(t) {
+    let d=t*pathLength;
+    if(d<armRun) return [leftX,backZ+bend+armRun-d,0,-1,1-d/armRun];
+    d-=armRun;
+    if(d<arc){
+      const a=d/bend;return [leftX+bend*(1-Math.cos(a)),backZ+bend*(1-Math.sin(a)),Math.sin(a),-Math.cos(a),0];
+    }
+    d-=arc;
+    if(d<backRun)return [leftX+bend+d,backZ,1,0,0];
+    d-=backRun;
+    if(d<arc){
+      const a=d/bend;return [rightX-bend+bend*Math.sin(a),backZ+bend*(1-Math.cos(a)),Math.cos(a),Math.sin(a),0];
+    }
+    d-=arc;return [rightX,backZ+bend+d,0,1,clamp01(d/armRun)];
   }
-  for(const side of [-1,1])
-    round(sx+side*1.907,.504,sz,.22,.485,1.16,.088,"#7d857a",fabric);
-  legs(sx+1.22,1.49,.83,.67,.043,.18,.068,"#5a5043");
-  round(sx+1.22,.313,1.45,1.18,.240,.98,.073,"#6a746c",fabric);
-  round(sx+1.22,.469,1.456,1.18,.181,.98,.083,"#91978b",fabric);
-  round(sx-1.42,.73,sz-.02,.557,.509,.175,.086,"#aa896f",{rz:.18,rx:-.2,mat:"linen"});
-  round(sx+1.32,.75,sz-.03,.562,.54,.19,.091,"#c0b7a1",{rz:-.15,rx:-.2,mat:"linen"});
-  sheet(20,29,(u,v)=>{
-    const edge=Math.max(0,(u-.71)/.29),ridge=.014*Math.sin(v*22+u*4)+.009*Math.sin(v*13-u*7);
-    return [sx+.72+.91*v+.019*Math.sin(u*3+v*10),.59+ridge-.23*edge,
-      1.30+.62*Math.min(u,.71)+.19*Math.sin(edge*Math.PI*.51)+.026*Math.sin(v*7)];
-  },"#b7aa93",creamLinen);
+  function surround(u,v){
+    const [x,z,tx,tz,out]=upholsteryPath(v),a=u*Math.PI*2;
+    const bottom=.226,top=.938-.207*ease(out),mid=(bottom+top)/2,h=(top-bottom)/2;
+    const end=clamp01(Math.min(v,1-v)*pathLength/.116);
+    const dome=Math.sqrt(Math.max(.00012,1-(1-end)**2));
+    const dr=(.116+.022*(1-out))*power(Math.cos(a),.60)*dome;
+    return [x+tz*dr,mid+h*power(Math.sin(a),.72)*dome,z-tx*dr];
+  }
+  sheet(128,20,(u,v)=>surround(1-u,v),"#777f74",fabric);
+  for(const side of [0,1]) sweep(t=>surround(t,side?.980:.020),.005,"#8e9486",fabric,27,5);
+  // A recessed walnut rail holds the upholstered seat base above the rug.
+  for(const x of [sx-1.61,sx-.48,sx+1.54])for(const z of [sz-.38,sz+.39])
+    cyl(x,.121,z,.054,.067,.143,14,"#665849",{mat:"walnut"});
+  round(sx,.224,sz,3.83,.153,1.055,.069,"#6c695a",{mat:"walnut"});
+  round(sx,.325,sz,3.79,.198,1.07,.075,"#758071",fabric);
+  for(let i=0;i<3;i++){
+    const cx=sx-1.183+i*1.183,chaise=i===2;
+    if(chaise){
+      cyl(cx-.44,.122,1.74,.051,.061,.140,14,"#655747",{mat:"walnut"});
+      cyl(cx+.44,.122,1.74,.051,.061,.140,14,"#655747",{mat:"walnut"});
+      round(cx,.233,1.45,1.16,.168,.93,.076,"#686b5c",{mat:"walnut"});
+      round(cx,.326,1.43,1.16,.203,.93,.083,"#74816f",fabric);
+    }
+    paddedForm({x:cx,y:.486,z:chaise?.986:sz+.071,w:1.166,h:.201,d:chaise?1.907:.976,
+      color:i===1?"#919785":"#8b9483",seamColor:"#a5a895",material:fabric,padding:.274,compression:.017,thickness:.0056,seed:i*1.7});
+    paddedForm({x:cx,y:.757+(i===1?-.012:0),z:sz-.305,w:1.166,h:.245,d:.49,rx:1.353,ry:(i-1)*.021,
+      color:"#828c7b",seamColor:"#979e89",material:fabric,padding:.36,compression:.014,thickness:.0045,seed:i+.4});
+  }
+  // Throw pillows lean on the arms; off-axis compression keeps the two silhouettes distinct.
+  paddedForm({x:sx-1.39,y:.75,z:sz-.016,w:.52,h:.20,d:.51,rx:1.23,rz:.22,ry:.087,color:"#af8f74",
+    seamColor:"#bca28b",material:creamLinen,padding:.64,compression:.011,seed:3,thickness:.0038});
+  paddedForm({x:sx+1.42,y:.746,z:sz-.015,w:.53,h:.21,d:.50,rx:1.28,rz:-.25,ry:-.103,color:"#c9bea5",
+    seamColor:"#aca28c",material:creamLinen,padding:.61,compression:.013,seed:1,thickness:.0038});
+  function sofaThrow(s,t){
+    const x=sx+.78+.78*s,xt=s*2-1,z=1.34+.736*t+.032*s;
+    const end=foldOver(z,1.811,.089),drop=end[1];
+    const y=.587-.042*xt*xt+.012*Math.sin(s*12+t*1.7)+.012*Math.cos(s*22-t*3.1)-drop*.96;
+    return [x+.005*Math.sin(t*6),y,end[0]+.018*Math.sin(s*18)*ease(drop/.14)];
+  }
+  sheet(18,32,sofaThrow,"#b7aa91",creamLinen);
+  for(const t of [.063,.109,.832,.875])
+    sheet(2,32,(u,v)=>{const p=sofaThrow(u,t+.012*v);p[1]+=.002;return p;},"#929581",fabric);
+  for(let k=0;k<28;k++){
+    const p=sofaThrow((k+.5)/28,1);rod(p,[p[0]+.003*Math.sin(k*1.83),p[1]-.036-.006*Math.sin(k),p[2]+.009],.0017,"#a2a28f",fabric);
+  }
   // A travertine coffee table, softly bevelled at its perimeter, on two offset pedestals.
   const tx=2.74,tz=2.33;
   cyl(tx-.48,.235,tz,.173,.195,.36,28,"#887b68",stone);
@@ -500,8 +657,7 @@ function buildPenthouse(g) {
   const lx=5.70,lz=-.89;
   cyl(lx,.067,lz,.208,.222,.11,30,"#746f5f",brassMetal);
   cyl(lx,.973,lz,.019,.023,1.71,20,"#a28f71",brassMetal);
-  cyl(lx,1.99,lz,.247,.335,.358,42,"#d8be98",{mat:"linen",glow:.51});
-  cyl(lx,1.807,lz,.318,.318,.01,40,"#ffddb0",amber);
+  lampShade(lx,1.807,lz,.324,.241,.356);
   plant(5.72,.02,-3.97,1.09,"#a99b84");plant(-5.66,.01,.33,.91,"#997f68");
   plant(-5.46,.01,4.02,.65,"#a1a596",true);
   const ax=-3.84,az=2.20;

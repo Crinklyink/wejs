@@ -63,6 +63,7 @@ uniform float shadowOn;
 uniform sampler2D glassBack,glassSide,woodFloor;
 uniform vec2 viewSize;
 uniform float reflectReady,captureFloor;
+uniform vec4 cityBounds[16];
 
 float rectOcclusion(vec2 at,vec2 center,vec2 halfSize,float spread) {
   vec2 d=abs(at-center)-halfSize;
@@ -124,6 +125,37 @@ void main() {
   vec3 bitangent=normalize(cross(baseN,tangent));
   vec2 st=vec2(dot(p,tangent),dot(p,bitangent));
   // Thin glazing is drawn in a separate depth-tested, alpha-blended pass.
+  if(kind==26.) {
+    // Tilt each insulated unit very slightly. Straight mullions retain their
+    // silhouettes while reflections flex across the pressure-bowed glass.
+    float along=dot(p,bitangent);
+    vec2 panel=fract(vec2(along/2.18,(p.y+112.)/3.25));
+    vec3 paneNormal=normalize(baseN+.009*(panel.x-.5)*bitangent+.006*(panel.y-.5)*tangent);
+    vec3 ray=reflect(-view,paneNormal);
+    vec3 inv=sign(ray+vec3(.0000001))/max(abs(ray),vec3(.00001));
+    float nearest=600.;vec3 reflected=skyBase(ray,sun);
+    for(int j=0;j<16;j++){
+      vec4 b=cityBounds[j];float top=floor(b.w/1024.)-144.;
+      vec3 lo=vec3(b.x-b.z,-112.,b.y-mod(b.w,1024.)/32.);
+      vec3 hi=vec3(b.x+b.z,top,b.y+mod(b.w,1024.)/32.);
+      vec3 t0=(lo-p)*inv,t1=(hi-p)*inv,enter=min(t0,t1),leave=max(t0,t1);
+      float t=max(enter.x,max(enter.y,enter.z));
+      if(t>1.45&&t<nearest&&t<min(leave.x,min(leave.y,leave.z))){
+        nearest=t;vec3 hit=p+t*ray;bool faceX=enter.x>enter.z;
+        vec2 grid=vec2((faceX?hit.z:hit.x)/2.2,(hit.y+112.)/3.15);
+        vec2 cell=fract(grid);float inhabit=hash2(floor(grid)+b.xy);
+        vec3 wall=mix(vec3(.19,.234,.26),vec3(.35,.36,.36),faceX?.62:.18);
+        float lit=smoothstep(.68,.81,inhabit)*smoothstep(.07,.16,cell.x)*(1.-smoothstep(.85,.95,cell.x))*smoothstep(.23,.30,cell.y)*(1.-smoothstep(.80,.89,cell.y));
+        reflected=mix(wall,vec3(.68,.60,.44),lit);
+        if(enter.y>=max(enter.x,enter.z))reflected=vec3(.44,.44,.42);
+        reflected=mix(reflected,horizonColor(ray,sun),smoothstep(38.,165.,t)*.38);
+      }
+    }
+    float fresnel=.32+.58*pow(1.-abs(dot(paneNormal,view)),3.);
+    vec3 pane=mix(c*.51,reflected*vec3(.87,.97,1.),fresnel+.13);
+    pane=mix(pane,horizonColor(-view,sun),smoothstep(67.,210.,distance0)*.6);
+    gl_FragColor=vec4(pane,1.);return;
+  }
   if(kind==13.) {
     if(dot(norm,view)<0.) norm=-norm;
     float ndv=saturate(dot(norm,view)), grazing=pow(1.-ndv,4.);
@@ -131,7 +163,7 @@ void main() {
     vec3 sky=skyBase(refl,sun);
     float glint=pow(max(dot(refl,sun),0.),640.);
     vec3 tint=mix(vec3(.42,.55,.60),sky,.72)+vec3(.45,.35,.22)*glint;
-    if(farm<.5 && reflectReady>.5){
+    if(farm<.5 && reflectReady>.5 && (abs(p.z+4.57)<.055 || abs(p.x+6.39)<.055)){
       vec2 uv=gl_FragCoord.xy/viewSize;
       vec4 room=abs(norm.z)>abs(norm.x)?texture2D(glassBack,uv):texture2D(glassSide,uv);
       tint=mix(tint,room.rgb*.92+.025,room.a*.93);

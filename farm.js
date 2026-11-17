@@ -68,7 +68,7 @@ function buildFarm(g, plots, story = {}) {
     }
     // Hedges and woodlots follow the contour. Each tree is a trunk with branching sprays.
     // Ground-level close-ups use the orchard models below; distant branches form the horizon.
-    for(let i=0;i<108;i++) {
+    for(let i=0;i<95;i++) {
       const a=between(0,tau),r=i<65?between(24,41):between(42,86);
       const x=Math.cos(a)*r,z=Math.sin(a)*r*.86,h=between(3.8,7.9),y=terrestrialHeight(x,z);
       woodlandTree(x,y,z,h);
@@ -232,22 +232,56 @@ function buildFarm(g, plots, story = {}) {
         box(side+sign*.037,1.21,zz+.075,.022,2.13,.028,'#875244',wood);
       }
     }
-    function roofStrip(x1,y1,x2,y2,side) {
-      const len=Math.hypot(x2-x1,y2-y1), tilt=Math.atan2(y2-y1,x2-x1);
-      const cx=x+(x1+x2)/2, cy=(y1+y2)/2;
-      box(cx,cy+.04,z,len+.09,.105,3.34,'#455559',{rz:tilt,mat:'metal'});
-      for(let i=0;i<11;i++) {
-        box(cx,cy+.106,z-1.60+i*.319,len+.04,.029,.031, i%3 ? '#5b6b68':'#697977',{rz:tilt,mat:'metal'});
+    function roofStrip(x1,y1,x2,y2) {
+      const len=Math.hypot(x2-x1,y2-y1),tilt=Math.atan2(y2-y1,x2-x1);
+      const nx=-(y2-y1)/len,ny=(x2-x1)/len,normal=[nx,ny,0];
+      const at=(u,zz,offset)=>[x+lerp(x1,x2,u)+nx*offset,lerp(y1,y2,u)+ny*offset,z+zz];
+      const depth=3.50, bays=11,pitch=depth/bays;
+      box(x+(x1+x2)*.5,(y1+y2)*.5-.012,z,len+.010,.060,depth,'#584f40',{rz:tilt,mat:'wood'});
+      // A folded seam has two raised cheeks, a rolled lip, and a shallow stiffener.
+      // The pans span the slope continuously; grazing light reveals the metal profile.
+      const section=[[0,.034],[.019,.033],[.037,.014],[.17,.014],[.19,.019],[.21,.014],
+        [.48,.014],[.50,.018],[.52,.014],[.83,.014],[.86,.020],[.88,.014],[.957,.014],[.971,.048],[.992,.049],[1,.034]];
+      const shades=['#63736f','#647671','#5b6d69','#6a7a73','#60716c'];
+      for(let k=0;k<bays;k++){
+        const zz=-depth*.5+k*pitch, shade=shades[(k*3)%shades.length];
+        for(let n=1;n<section.length;n++) {
+          const [a,ha]=section[n-1],[b,hb]=section[n],za=zz+a*pitch,zb=zz+b*pitch;
+          const faceNormal=V3.unit([nx*(zb-za),ny*(zb-za),ha-hb]);
+          g.polygon([at(0,za,ha),at(0,zb,hb),at(1,zb,hb),at(1,za,ha)],shade,metal,faceNormal);
+        }
+        if(k%2===0)for(const side of [-1,1]){
+          const u=side<0?.155:.79;
+          const left=at(u-.006,zz+pitch*.944,.021),right=at(u+.006,zz+pitch*.944,.021);
+          g.polygon([left,at(u,zz+pitch*.925,.025),right,at(u,zz+pitch*.963,.025)],'#8e9387',metal,normal);
+        }
       }
-      for (const face of [z+1.685,z-1.685]) {
-        box(cx,cy,face,len+.14,.135,.080,'#b4ad94',{rz:tilt,mat:'wood'});
+      for(const sign of [-1,1]){
+        const zz=sign*(depth*.5+.002);
+        box(x+(x1+x2)*.5,(y1+y2)*.5-.045,z+zz,len+.024,.103,.067,'#a29c82',{rz:tilt,mat:'wood'});
+        g.polygon([at(0,zz-sign*.041,.052),at(0,zz+sign*.043,.052),at(1,zz+sign*.043,.052),at(1,zz-sign*.041,.052)],'#788078',metal,normal);
+        g.polygon([at(0,zz+sign*.043,.052),at(0,zz+sign*.046,-.010),at(1,zz+sign*.046,-.010),at(1,zz+sign*.043,.052)],'#69726e',metal,[0,0,sign]);
       }
-      box(x+x1, y1+.094, z,.083,.082,3.42,side,metal);
     }
-    roofStrip(-2.06,2.16,-shoulderX,shoulder,'#526366');
-    roofStrip(-shoulderX,shoulder,0,ridge,'#687677');
-    roofStrip(0,ridge,shoulderX,shoulder,'#82908a');
-    roofStrip(shoulderX,shoulder,2.06,2.16,'#657571');
+    roofStrip(-2.12,2.12,-shoulderX,shoulder);
+    roofStrip(-shoulderX,shoulder,0,ridge);
+    roofStrip(0,ridge,shoulderX,shoulder);
+    roofStrip(shoulderX,shoulder,2.12,2.12);
+    // Ridge and shoulder flashing lap each roof break. The underside has rafter tails.
+    for(const sign of [-1,1]){
+      const pts=[[0,ridge+.09],[sign*.10,ridge+.06],[sign*.16,ridge+.018]];
+      const knuckle=[[sign*(shoulderX-.095),shoulder+.076],[sign*shoulderX,shoulder+.058],
+        [sign*(shoulderX+.075),shoulder-.054]];
+      for(const profile of [pts,knuckle]) for(let k=1;k<profile.length;k++){
+        const [ax,ay]=profile[k-1],[bx,by]=profile[k];
+        g.polygon([[x+ax,ay,z-1.79],[x+bx,by,z-1.79],[x+bx,by,z+1.79],[x+ax,ay,z+1.79]],'#77827a',metal,[sign*.32,.95,0]);
+      }
+      for(let k=0;k<9;k++){
+        const zz=z-1.56+k*.394;
+        box(x+sign*1.992,2.19,zz,.287,.094,.072,'#83705a',{rz:-sign*.68,mat:'oak'});
+        box(x+sign*2.083,2.111,zz,.097,.077,.081,'#978069',{rz:-sign*.68,mat:'oak'});
+      }
+    }
     const trim='#b1ad97';
     // Rolled eaves, downpipes, gutter brackets and lag screws remain legible from the doorway.
     for(const sign of [-1,1]) {
@@ -279,10 +313,33 @@ function buildFarm(g, plots, story = {}) {
       }
       box(x+sign*.126,1.00,front+.278,.046,.19,.045,'#494a40',metal);
     }
-    box(x,1.995,front+.18,2.34,.076,.089,'#4a504b',metal);
-    for(const xx of [-.65,.65]) {
-      box(x+xx,1.92,front+.22,.071,.18,.04,'#575951',metal);
+    // Steel track extends past the opening so both leaves could slide clear.
+    for(const [yy,ww,dd] of [[2.017,3.78,.043],[2.054,3.80,.079],[1.982,3.79,.084]])
+      box(x,yy,front+.190,ww,.027,dd,'#585e56',metal);
+    function faceBolt(xx,yy,zz,r) {
+      cyl(xx,yy,zz,r,r,.012,6,'#909184',{rx:Math.PI*.5,mat:'metal'});
     }
+    for(const off of [-1.77,-1.18,-.59,0,.59,1.18,1.77]){
+      box(x+off,2.015,front+.120,.049,.16,.084,'#68695d',metal);
+      faceBolt(x+off,2.082,front+.166,.014);
+    }
+    for(const xx of [-.79,-.19,.19,.79]){
+      box(x+xx,1.906,front+.248,.061,.245,.021,'#66675a',metal);
+      cyl(x+xx,2.049,front+.228,.047,.047,.048,14,'#444b44',{rx:Math.PI*.5,mat:'metal'});
+      cyl(x+xx,2.049,front+.251,.027,.027,.012,12,'#777c6d',{rx:Math.PI*.5,mat:'metal'});
+      faceBolt(x+xx,1.843,front+.265,.014);
+    }
+    // The hasp and drop-pin sit between a pair of U-shaped, worn door pulls.
+    for(const sign of [-1,1]) {
+      const xx=x+sign*.123,pz=front+.310;
+      for(const yy of [.908,1.056]){
+        box(xx,yy,front+.275,.052,.051,.019,'#77776a',metal);
+        beam([xx,yy,front+.280],[xx,yy,pz+.024],.011,'#6a6d61',metal);
+      }
+      beam([xx,.910,pz+.024],[xx,1.055,pz+.024],.011,'#a4a494',metal);
+    }
+    box(x,.825,front+.282,.165,.039,.013,'#807b67',metal);
+    beam([x+.026,.807,front+.307],[x+.026,.875,front+.307],.009,'#8b826b',metal);
     box(x,2.68,front+.078,.75,.71,.095,'#603e32');
     box(x,2.68,front+.129,.60,.55,.068,'#af5947',wood);
     for(const xx of [-.357,.357]) box(x+xx,2.68,front+.175,.065,.69,.061,trim,wood);
@@ -346,18 +403,52 @@ function buildFarm(g, plots, story = {}) {
       beam([x-r0,y0,z+r0],[x+r0,y0,z+r0],.03,dark,metal);
     }
     box(x,hub,z,.26,.26,.56,'#776953',metal);
-    const rotorZ=z+.29;
-    for(let i=0;i<12;i++) {
-      const a=(i+.26)*tau/12, xx=Math.cos(a), yy=Math.sin(a);
-      beam([x+.12*xx,hub+.12*yy,rotorZ],[x+.82*xx,hub+.82*yy,rotorZ],.018,dark,{mat:'windmill'});
-      box(x+.691*xx,hub+.691*yy,rotorZ+.028,.42,.19,.045,
-        i%3?'#9ca498':'#a7aca0',{rz:a+.17,mat:'windmill'});
-      box(x+.866*xx,hub+.866*yy,rotorZ+.056,.066,.187,.049,'#936959',{rz:a+.17,mat:'windmill'});
+    const rotorZ=z+.29,vanes=18,spin={mat:'windmill'};
+    const wheelPoint=(angle,r,depth)=>[x+Math.cos(angle)*r,hub+Math.sin(angle)*r,rotorZ+depth];
+    const plateShades=['#a1aba1','#aab3a6','#929e93','#a5aea1'];
+    for(let i=0;i<vanes;i++) {
+      const a=(i+.26)*tau/vanes,step=tau/vanes;
+      // The blades are tapered sheet steel, rolled into a shallow scoop. Their
+      // red witness stripe follows the curved sheet instead of floating above it.
+      function vanePoint(u,r){
+        const angle=a+(u-.5)*step*(.63+.21*r)+(.90-r)*.13;
+        return wheelPoint(angle,r,.025+u*.059+.021*Math.sin(u*Math.PI)-r*.017);
+      }
+      const rings=[.47,.54,.79,.841,.902];
+      for(let r=1;r<rings.length;r++)for(let k=0;k<4;k++){
+        const u0=k*.25,u1=(k+1)*.25,lo=rings[r-1],hi=rings[r];
+        g.polygon([vanePoint(u0,lo),vanePoint(u0,hi),vanePoint(u1,hi),vanePoint(u1,lo)],
+          r===4?'#966b59':plateShades[i%4],spin);
+      }
+      for(const radius of [.47,.83]){
+        beam(wheelPoint(a,radius,-.025),wheelPoint(a+step,radius,-.025),.009,'#717d72',spin);
+      }
+      if(i%3===0){
+        for(const offset of [-.09,.09])beam(wheelPoint(a,.115,-.018),wheelPoint(a+offset,.83,-.025),.012,'#778274',spin);
+      }
     }
-    ball(x,hub,rotorZ+.08,.22,.22,.17,'#987355',metal);
+    cyl(x,hub,rotorZ+.043,.110,.133,.108,16,'#82715c',{rx:Math.PI*.5,mat:'metal'});
+    cyl(x,hub,rotorZ+.113,.044,.051,.034,8,'#a1967d',{rx:Math.PI*.5,mat:'metal'});
+    for(const sx of [-1,1]) {
+      box(x+sx*.118,hub,z-.012,.021,.243,.33,'#7e7f6c',metal);
+      for(const yy of [-.083,.083])for(const zz of [-.11,.11]){
+        cyl(x+sx*.136,hub+yy,z+zz,.012,.012,.020,6,'#a19880',{rz:Math.PI*.5,mat:'metal'});
+      }
+    }
     // The weather tail extends behind the wheel.
     beam([x,hub,z-.20],[x,hub+.03,z-1.02],.031,dark,metal);
-    box(x,hub+.04,z-.85,.04,.34,.40,'#ae654d',metal);
+    // Riveted fishtail weather vane balances the rotor; the pump rod descends into the platform.
+    const tail=[[z-.46,hub+.02],[z-.80,hub+.18],[z-1.28,hub+.24],[z-1.18,hub+.03],[z-1.27,hub-.15],[z-.78,hub-.088]];
+    g.polygon(tail.map(([zz,yy])=>[x,yy,zz]),'#a77861',metal,[1,0,0]);
+    for(let j=0;j<tail.length;j++){
+      const [zz,yy]=tail[j],[nz,ny]=tail[(j+1)%tail.length];
+      beam([x,yy,zz],[x,ny,nz],.008,'#969783',metal);
+    }
+    beam([x+.027,.34,z+.025],[x+.027,hub-.15,z+.025],.016,'#756f5d',metal);
+    for(let j=0;j<7;j++){
+      const yy=.48+j*.35,dx=.50-(yy-.1)*.11;
+      beam([x-dx,yy,z+dx],[x-dx,yy,z+dx-.19],.015,'#948b75',metal);
+    }
     cyl(x-.16,.43,z-.12,.069,.10,.82,8,'#7a9287',metal);
     beam([x-.16,.78,z-.1],[x+.31,.78,z-.1],.065,'#829b8e',metal);
     beam([x+.31,.78,z-.1],[x+.31,.62,z-.1],.056,'#829b8e',metal);
@@ -379,7 +470,23 @@ function buildFarm(g, plots, story = {}) {
   function tree(x,z,scale,fruit) {
     const base=terrestrialHeight(x,z),h=scale*3.17,phase=random()*tau;
     const palette=pick(canopyPalettes);
-    function limb(p,q,r) { beam(p,q,r,pick(bark),barkMat); }
+    function limb(p,q,r) {
+      const shade=pick(bark);
+      if(r<h*.009){beam(p,q,r,shade,barkMat);return;}
+      // Curved, tapering growth with a slightly fluted base. A shared ring normal
+      // keeps the silhouette round as the player walks around the trunk.
+      const direction=V3.unit(V3.sub(q,p));
+      const radial=V3.unit(V3.cross(direction,Math.abs(direction[1])>.9?[1,0,0]:[0,1,0]));
+      const tangent=V3.cross(radial,direction);
+      const phase=p[0]*1.92+p[2]*.7,wide=r>h*.02,segments=wide?11:8,rings=wide?5:3;
+      surface(rings,segments,(u,v)=>{
+        const ang=u*tau,cs=Math.cos(ang),sn=Math.sin(ang);
+        const radius=r*lerp(1.27,.74,v)*(1+.064*Math.sin(ang*5+v*1.47+phase));
+        const sway=r*.73*Math.sin(v*Math.PI)*Math.cos(phase);
+        const core=p.map((n,k)=>lerp(n,q[k],v)+radial[k]*sway);
+        return core.map((n,k)=>n+(radial[k]*cs+tangent[k]*sn)*radius);
+      },shade,barkMat);
+    }
     const root=[x,base,z],mid=[x+.054*h,base+h*.245,z-.027*h],high=[x+.021*h,base+h*.51,z+.032*h];
     limb(root,mid,h*.031);limb(mid,high,h*.024);
     for(let i=0;i<6;i++) {
@@ -468,13 +575,45 @@ function buildFarm(g, plots, story = {}) {
       }
     }
   }
+  function tomato(x,y,z,r,angle,color) {
+    // Lobed shoulders, sloping sides, and the shallow depression around the calyx.
+    const sides=10, rings=[], normals=[];
+    for(const b of [-1.09,-.37,.36,1.04]){
+      const row=[],ns=[],cb=Math.cos(b),sb=Math.sin(b);
+      for(let k=0;k<sides;k++){
+        const a=k*tau/sides,rib=1+.080*Math.cos(5*a+angle)*(.51+.49*Math.abs(sb));
+        row.push([x+r*cb*Math.cos(a)*rib,y+r*(sb*.87-.15*Math.max(0,sb)**8),z+r*cb*Math.sin(a)*rib]);
+        ns.push(V3.unit([cb*Math.cos(a),sb*1.12,cb*Math.sin(a)]));
+      }
+      rings.push(row);normals.push(ns);
+    }
+    for(let k=0;k<sides;k++){
+      const next=(k+1)%sides;
+      g.polygon([[x,y-r*.87,z],rings[0][k],rings[0][next]],color,leafMat,[0,-1,0]);
+      g.polygon([rings[3][k],[x,y+r*.72,z],rings[3][next]],color,leafMat,[0,1,0]);
+      for(let j=0;j<3;j++){
+        const verts=[rings[j][k],rings[j+1][k],rings[j+1][next],rings[j][next]];
+        const ns=[normals[j][k],normals[j+1][k],normals[j+1][next],normals[j][next]];
+        if(g.smoothFace)g.smoothFace(...verts,ns,color,leafMat);
+        else g.polygon(verts,color,leafMat);
+      }
+    }
+    for(let k=0;k<5;k++){
+      const a=angle+k*tau/5;
+      leaf(x,y+r*.76,z,a,r*.72,r*.094,-r*.14,r*.12,'#5c6e41');
+    }
+  }
   function plant(x,y,z,crop,stage,variant) {
     const ready=stage==='ready',wet=stage==='watered';
     const rotation=variant*2.399;
     if (crop === 'corn') {
       const h=(ready ? 1.49 : wet ? .52 : .18)*(.94+.075*Math.sin(rotation));
       const rad=ready ? .026 : wet ? .017 : .008;
-      cyl(x,y+h*.49,z,rad*.52,rad,h*.98,8,'#879058',leafMat);
+      cyl(x,y+h*.49,z,rad*.52,rad,h*.98,9,'#879058',leafMat);
+      if(ready)for(let k=1;k<=4;k++){
+        const t=k*.173+.035,rr=rad*(.99-.43*t);
+        cyl(x,y+h*t,z,rr*.98,rr*1.11,h*.015,8,'#9b9f68',leafMat);
+      }
       const n=ready ? 9 : wet ? 5 : 3;
       for(let i=0;i<n;i++) {
         const t=i/(n+1),a=rotation+i*2.62;
@@ -498,11 +637,27 @@ function buildFarm(g, plots, story = {}) {
       if(ready) {
         const a=rotation+.48,dx=Math.cos(a),dz=Math.sin(a);
         const ex=x+dx*.042,ez=z+dz*.042;
-        ball(ex,y+h*.61,ez,.088,.24,.088,'#bc9b57',leafMat);
-        leaf(ex-.01,y+h*.50,ez,a,.051,.043,.226,.025,'#849051');
-        for(let i=0;i<4;i++){
-          const aa=a+i*1.57;
-          beam([x,y+h*.94,z],[x+Math.cos(aa)*.076,y+h+.092,z+Math.sin(aa)*.076],.006,'#b9a470');
+        const earY=y+h*.575, earH=h*.168, earR=.039, earTilt=.048;
+        surface(6,10,(u,v)=>{
+          const ang=u*tau,skin=Math.pow(Math.max(.001,Math.sin(Math.PI*v)),.55);
+          const grain=1+.047*Math.cos(ang*10+v*.31);
+          return [ex+earTilt*dx*v+Math.cos(ang)*earR*skin*grain,
+            earY+v*earH,ez+earTilt*dz*v+Math.sin(ang)*earR*skin*grain];
+        },'#c2a663',leafMat);
+        for(let k=0;k<3;k++){
+          const aa=a+(k-1)*.75;
+          leaf(ex+Math.cos(aa)*.019,earY+.003,ez+Math.sin(aa)*.019,aa,.067,.037,earH*(.76+.07*k),.062,'#899457');
+        }
+        // Branched pollen tassels with fine dangling anthers at the stem tips.
+        for(let k=0;k<5;k++){
+          const aa=a+k*tau/5,xx=x+Math.cos(aa)*.099,zz=z+Math.sin(aa)*.099;
+          const tipY=y+h+.078+.023*(k%2);
+          beam([x,y+h*.934,z],[xx,tipY,zz],.0045,'#b4a06c');
+          for(let n=1;n<4;n++){
+            const t=n/4,tx=lerp(x,xx,t),ty=lerp(y+h*.934,tipY,t),tz=lerp(z,zz,t);
+            g.polygon([[tx,ty,tz],[tx+.004,ty-.025,tz+.008],[tx+.009,ty-.015,tz+.013]],
+              '#c6ac6b',leafMat,[dx*.3,.85,dz*.3]);
+          }
         }
       }
     } else if(crop==='tomato') {
@@ -527,14 +682,20 @@ function buildFarm(g, plots, story = {}) {
           }
         }
         if(ready && i%2===0) {
-          const radius=h*between(.105,.142);
-          ball(tx,yy+len*.10,tz,radius,radius*.94,radius,i%4?'#b85336':'#ae4e36',leafMat);
-          for(let f=0;f<3;f++)leaf(tx,yy+len*.10+radius*.46,tz,a+f*2.09,radius*.44,radius*.087,-radius*.15,.004,'#687846');
+          const diameter=h*between(.110,.154),cr=.5*diameter,fruitY=yy+len*.07;
+          // The pedicel bends downward under the fruit's weight.
+          const joint=[tx+dx*.012,fruitY+cr*1.21,tz+dz*.012];
+          beam([lerp(x,tx,.86),yy+len*.20,lerp(z,tz,.86)],joint,h*.006,'#6b7849',leafMat);
+          beam(joint,[tx,fruitY+cr*.72,tz],h*.007,'#6b7849',leafMat);
+          tomato(tx,fruitY,tz,cr,a, i%4?'#aa4935':'#b6573a');
         }
       }
     } else {
       const h=ready ? .34 : wet ? .22 : .10;
-      if(ready) cyl(x,y+.015,z,.050,.032,.055,10,'#bb824d',soilMat);
+      if(ready)surface(4,9,(u,v)=>{
+        const a=tau*u,rr=.046*Math.sin((v*.95+.025)*Math.PI*.95)**.60;
+        return[x+Math.cos(a)*rr,y-.027+.063*v,z+Math.sin(a)*rr];
+      },'#b98350',soilMat);
       for(let i=0;i<(ready?7:4);i++) {
         const a=rotation+i*2.399,dx=Math.cos(a),dz=Math.sin(a);
         const rise=h*between(.58,1.0),reach=h*between(.29,.67),yy=y+.025;
@@ -542,8 +703,15 @@ function buildFarm(g, plots, story = {}) {
         for(let k=1;k<=4;k++){
           const t=k/4.5, cx=x+dx*reach*t,cz=z+dz*reach*t,cy=yy+rise*t;
           for(const side of [-1,1]){
-            leaf(cx,cy,cz,a+side*.90,h*(.23-.125*t),h*.024,h*.105,.004,
-              i%2?'#697c4d':'#7b8a58');
+            const aa=a+side*.91,dl=h*(.235-.122*t),ex=cx+Math.cos(aa)*dl,ez=cz+Math.sin(aa)*dl;
+            // Finely divided carrot leaflets widen around the middle of each frond.
+            leaf(cx,cy,cz,aa,dl,h*.011,h*.092,.004,i%2?'#6b8250':'#798d58');
+            if(ready)for(const tipSide of [-1,1]){
+              const bx=lerp(cx,ex,.59),bz=lerp(cz,ez,.59),end=aa+tipSide*.73,rad=dl*.48;
+              g.polygon([[bx,cy+h*.037,bz],[bx+.003,cy+h*.052,bz+.002],
+                [bx+Math.cos(end)*rad,cy+h*.124,bz+Math.sin(end)*rad]],
+                i%2?'#71874f':'#7f9058',leafMat,[.11,.96,.15]);
+            }
           }
         }
       }
@@ -577,11 +745,27 @@ function buildFarm(g, plots, story = {}) {
           wet?'#675747':'#84715a',soilMat,[0,1,0]);
       }
     }
+    // Organic mulch, small soil clods and worn rim joints show the scale up close.
+    for(let n=0;n<57;n++){
+      const xx=x+between(-1.20,1.20),zz=z+between(-.80,.80),dx=xx-x,dz=zz-z;
+      const ridge=Math.exp(-22*Math.sin(dz*Math.PI/.52)**2);
+      const gy=.155+ridge*.081+.005*Math.sin(dx*16+dz*15)+.006*Math.cos(dx*8-dz*28);
+      const r=between(.011,.035),a=n*2.399,ca=Math.cos(a),sa=Math.sin(a);
+      const apex=[xx+.12*r,gy+r*.32,zz],base=[];
+      for(let k=0;k<5;k++){
+        const angle=k*tau/5;const u=Math.cos(angle)*r,v=Math.sin(angle)*r*.62;
+        base.push([xx+u*ca-v*sa,gy-.003,zz+u*sa+v*ca]);
+      }
+      for(let k=0;k<5;k++)g.polygon([base[k],apex,base[(k+1)%5]],n%5?(wet?'#655541':'#827058'):'#979280',soilMat);
+    }
     if(plot.stage==='empty'||!plot.stage)return;
     for(let row=0;row<3;row++)for(let col=0;col<5;col++) {
       const variant=5*row+col,xx=x+(col-2)*.478+.029*Math.sin(variant*2.39);
       const zz=z+(row-1)*.52+.023*Math.cos(variant*4.07);
-      plant(xx,.221,zz,plot.crop,plot.stage,variant);
+      const dx=xx-x,dz=zz-z;
+      const ridge=.155+.081*Math.exp(-22*Math.sin(dz*Math.PI/.52)**2);
+      const ground=ridge+.005*Math.sin(dx*16+dz*15)+.006*Math.cos(dx*8-dz*28);
+      plant(xx,ground-.009,zz,plot.crop,plot.stage,variant);
     }
   }
   function duck(x,z,a) {
@@ -667,9 +851,58 @@ function buildFarm(g, plots, story = {}) {
         batten([tipX,tipY,zz],[x0+.69,2.08,zz+.22],.034,'#786d57');
         batten([peak,ridge,zz],[x1,eave,zz],.039);
       }
+      // Mortise knees carry each rafter onto its post. Patinated, bolted side plates
+      // bridge the joint; no plates span the unrepaired missing roof bay.
+      for(const side of [-1,1]){
+        const ex=side<0?tipX:x1,ey=side<0?tipY:eave,ix=ex-side*.252;
+        const plateZ=zz+.036,good=stage>0||j!==2;
+        if(good||side>0){
+          const iy=roofHeight(ix)-.065;
+          batten([ex,ey-.31,zz],[ix,iy-.06,zz],.027,'#8e7d60',wood);
+          const points=[[ex,ey-.126,plateZ],[ex,ey+.021,plateZ],[ix,iy+.085,plateZ],[ex-side*.078,ey-.048,plateZ]];
+          g.polygon(points,'#74796b',metal,[0,0,1]);
+          for(const [px,py] of [[ex,ey-.073],[ex-side*.10,ey+.014]]){
+            cyl(px,py,plateZ+.008,.012,.012,.012,6,'#9b9c89',{rx:Math.PI*.5,mat:'metal'});
+          }
+        }
+      }
       if(j===sections)break;
       const mid=zz+span*.5;
-      // Fine leading and narrow sky reflections imply glass while preserving views through each pane.
+      // Individual panes are inset behind the muntins. Several pieces survive in the
+      // ruined shell, while restoration fills the gaps with newly cut glass.
+      for(const side of [-1,1]) {
+        const wallX=side<0?x0:x1;
+        const wNormal=[side,0,0],zA=zz+.044,zB=zz+span-.044;
+        for(let halfPane=0;halfPane<2;halfPane++){
+          const za=halfPane?mid+.012:zA,zb=halfPane?zB:mid-.012;
+          for(let row=0;row<2;row++){
+            const low=row?1.223:.565,hi=row?eave-.050:1.161;
+            if(stage===0 && (j+row*3+halfPane+(side<0?0:2))%4===0)continue;
+            const paneX=wallX+side*.010;
+            g.polygon([[paneX,low,za],[paneX,hi,za],[paneX,hi,zb],[paneX,low,zb]],'#899f93',glass,wNormal);
+          }
+        }
+        const r1=side<0?x0+.036:peak+.025, r2=side<0?peak-.023:x1-.034;
+        const nz=V3.unit([roofHeight(r1)-roofHeight(r2),r2-r1,0]);
+        if(stage>0||(j+(side>0?2:0))%3!==1){
+          // The roof's middle section has a brass-hinged opening light with a prop.
+          const vent=stage>0&&j===3&&side<0, hx=vent?lerp(r1,r2,.52):r1;
+          const pane=(left,right,zA,zB,liftLeft=0)=>g.polygon([
+            [left,roofHeight(left)+.015+liftLeft,zA],[left,roofHeight(left)+.015+liftLeft,zB],
+            [right,roofHeight(right)+.015,zB],[right,roofHeight(right)+.015,zA]],
+            '#a7b3a4',glass,nz);
+          pane(r1,hx===r1?r2:hx,zA,zB);
+          if(vent){
+            pane(hx,r2,zA,zB,.17);
+            batten([hx,roofHeight(hx)+.185,zA],[hx,roofHeight(hx)+.185,zB],.012,'#83897a');
+            for(const vz of [zA,zB]){
+              batten([hx,roofHeight(hx)+.183,vz],[r2,roofHeight(r2)+.023,vz],.011,'#7d8376');
+              batten([hx-.052,roofHeight(hx)-.015,vz],[hx+.063,roofHeight(hx)+.155,vz],.008,'#9e936c',{mat:'brass'});
+            }
+          }
+        }
+      }
+      // Glazing bars and the rebated edge of the panes catch a narrow sky reflection.
       if(stage>0||j%3!==1) {
         for(const xx of [x0,x1]){
           batten([xx,.49,mid],[xx,eave,mid],.011,'#7b8275');
@@ -690,6 +923,14 @@ function buildFarm(g, plots, story = {}) {
         batten([xx,.12,endZ],[xx,roofHeight(xx),endZ],doorPost?.047:.033,doorPost?oak:iron,doorPost?wood:metal);
       }
       box((x0+x1)/2,eave,endZ,x1-x0,.12,.099,oak,wood);
+      for(const [left,right] of [[x0+.066,7.46],[8.62,x1-.065]]) {
+        if(stage>0||endZ===z0) {
+          const oz=endZ+.008, top=eave-.069;
+          for(const [lo,hi] of [[.476,1.16],[1.225,top]]){
+            g.polygon([[left,lo,oz],[right,lo,oz],[right,hi,oz],[left,hi,oz]],'#99ab9f',glass,[0,0,endZ===z0?-1:1]);
+          }
+        }
+      }
       for(const [a,b] of [[x0,7.49],[8.60,x1]]) {
         box((a+b)/2,.34,endZ,b-a,.23,.093,aged,wood);
         box((a+b)/2,1.19,endZ,b-a,.049,.050,iron,metal);
@@ -703,6 +944,17 @@ function buildFarm(g, plots, story = {}) {
     }
     batten([hinge[0],.21,hinge[2]],[outer[0],1.05,outer[2]],.027,aged,wood);
     ball(outer[0]-.06,1.02,outer[2]+.021,.067,.041,.057,'#817957',{mat:'brass'});
+    for(const yy of [.39,1.59]){
+      cyl(hinge[0]+.026,yy,hinge[2]+.023,.018,.018,.106,10,'#8a8470',{mat:'brass'});
+      box(hinge[0]-.028,yy,hinge[2]+.043,.08,.064,.014,'#7b7b67',metal);
+    }
+    // Worn slate flags follow the working aisle to the potting table.
+    for(let k=0;k<7;k++){
+      const xx=8.11+.034*Math.sin(k*3.0),zz=-3.92-k*.557,w=.31+.025*Math.cos(k);
+      const corners=[[-w,-.203],[-w*.78,-.258],[w*.84,-.248],[w,-.135],[w*.89,.220],
+        [-w*.71,.257],[-w,.138]].map(([dx,dz])=>[xx+dx,.055,zz+dz]);
+      g.polygon(corners,k%2?'#9d9b88':'#8e9385',stone,[0,1,0]);
+    }
     // June's envelope rests on the solid bench apron at the entry.
     box(7.12,.852,-3.40,.84,.085,.40,oak,wood);
     for(const xx of [6.80,7.43])for(const zz of [-3.53,-3.27]){
@@ -854,7 +1106,10 @@ function buildFarm(g, plots, story = {}) {
   box(2.65,.66,-3.34,.13,.036,.082,'#82918a',{ry:.44,mat:'metal'});
   const meadowSeed = scenerySeed;
   const centers=[[0,.5],[3.2,.5],[0,3.15],[3.2,3.15]];
-  centers.forEach(([x,z],i)=>plantingBed(x,z,plots?.[i] || {stage:'empty',crop:'carrot'}));
+  centers.forEach(([x,z],i)=>{
+    scenerySeed=708173+i*25111;
+    plantingBed(x,z,plots?.[i] || {stage:'empty',crop:'carrot'});
+  });
   scenerySeed = meadowSeed;
   // Soft borders of fescue, clover and flowering weeds fill the gaps around the vegetable rows.
   for(const [cx,cz,w,d,count] of [
