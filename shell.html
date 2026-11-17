@@ -4,23 +4,24 @@
 <header class="topbar">
   <div class="brand"><svg class="brandmark" viewBox="0 0 40 40" aria-hidden="true"><path fill="currentColor" d="M3 33V19l7-3v17zm10 0V9l7-4v28zm10 0V14l7-3v22zM3 35h31v2H3z"/><path d="M31 18c1-5 4-6 7-7-.2 4-2.1 6.5-7 7z" fill="#b5cf96"/></svg><span>HIGHRISE <em>&amp;</em> HARVEST</span></div>
   <nav aria-label="Game navigation"><button class="nav active" data-tab="world"><i data-icon="cube"></i>World</button><button class="nav" data-tab="portfolio"><i data-icon="chart"></i>Portfolio</button><button class="nav" data-tab="journal"><i data-icon="book"></i>Journal</button></nav>
-  <div class="header-end"><span id="save-indicator"><b></b> Autosaved</span><button class="icon-btn" id="sound" title="Enable sound" aria-label="Enable sound"><i data-icon="mute"></i></button><button class="icon-btn" id="help" title="Controls & settings" aria-label="Controls and settings"><i data-icon="settings"></i></button></div>
+  <div class="header-end"><button class="nav dashboard-toggle" id="dash-toggle" aria-controls="sidebar" aria-expanded="false"><i data-icon="panel"></i>Dashboard</button><span id="save-indicator"><b></b> Autosaved</span><button class="icon-btn" id="sound" title="Enable sound" aria-label="Enable sound"><i data-icon="mute"></i></button><button class="icon-btn" id="help" title="Controls & settings" aria-label="Controls and settings"><i data-icon="settings"></i></button></div>
 </header>
 <main>
   <section id="viewport" aria-label="Explorable game world">
-    <canvas id="scene" aria-label="3D game world. Use WASD or click the ground to move." tabindex="0"></canvas>
+    <canvas id="scene" aria-label="First-person 3D world. Walk with WASD, look with the mouse or arrow keys, and interact with E." tabindex="0"></canvas>
     <div class="scene-vignette"></div>
     <div class="location"><div class="world-type"><span id="world-symbol"></span><span id="world-type"></span></div><h1 id="scene-title"></h1><p id="scene-subtitle"></p></div>
     <div class="world-clock"><i data-icon="calendar"></i><b id="day"></b><span></span><i id="time-icon" data-icon="moon"></i><b id="clock"></b></div>
-    <div id="markers"></div>
-    <div class="bottom-controls"><div class="controls-hint"><span><kbd>WASD</kbd> Move</span><span><i data-icon="mouse"></i> Drag to orbit</span><span><kbd>E</kbd> Interact</span></div><div class="view-tools"><button id="zoom-out" title="Zoom out" aria-label="Zoom out">−</button><button id="camera-home" title="Reset camera" aria-label="Reset camera"><i data-icon="focus"></i></button><button id="zoom-in" title="Zoom in" aria-label="Zoom in">+</button></div></div>
+    <button id="unread-note" class="unread-note"><i data-icon="book"></i> A letter from June</button><div class="reticle" aria-hidden="true"></div><div id="station-hint"></div>
+    <div class="bottom-controls"><div class="controls-hint"><span><kbd>WASD</kbd> Walk</span><span><i data-icon="mouse"></i> Look</span><span><kbd>E</kbd> Use</span><span><kbd>Tab</kbd> Dashboard</span></div>
+    <button id="enter-look" class="enter-look">Enable mouse look</button></div><div id="touch-pad" aria-label="Movement joystick"><b></b></div><button id="touch-use">Use</button>
     <button id="mobile-panel" aria-expanded="false" aria-controls="sidebar"><i data-icon="panel"></i> Dashboard</button>
-    <div id="toast" role="status"></div><div id="transition" aria-live="polite"><i data-icon="moon"></i><strong></strong></div><div id="gl-error" hidden></div>
+    <div id="activity" aria-hidden="true"></div><div id="toast" role="status"></div><div id="transition" aria-live="polite"><i data-icon="moon"></i><strong></strong></div><div id="gl-error" hidden></div>
   </section>
-  <aside id="sidebar" aria-label="Daily dashboard"><div class="sidebar-scroll">
+  <aside id="sidebar" aria-label="Daily dashboard"><div class="sidebar-scroll"><div class="drawer-top"><span class="eyebrow">RESIDENT DASHBOARD</span><button id="close-dashboard" class="icon-btn" aria-label="Close dashboard"><i data-icon="x"></i></button></div>
     <section class="wallet"><div class="eyebrow"><i data-icon="wallet"></i> AVAILABLE CASH</div><div class="money" id="cash"></div><div class="wealth-line"><span>Net worth</span><strong id="worth"></strong></div></section>
     <section class="watch"><div class="section-head"><h2 id="watch-title"></h2><span class="live" id="watch-status"></span></div><div id="watch-list"></div><button class="terminal" id="primary"></button></section>
-    <section class="routine"><div class="section-head"><h2>Daily routine</h2><span id="routine-count"></span></div><div class="progress"><b></b></div><div id="tasks"></div></section>
+    <section class="field-update" id="field-update"></section><section class="routine"><div class="section-head"><h2>Daily routine</h2><span id="routine-count"></span></div><div class="progress"><b></b></div><div id="tasks"></div></section>
   </div><div class="travel"><div class="dest-icon"><i id="dest-icon" data-icon="sprout"></i></div><div><small>NEXT DESTINATION</small><b id="dest"></b></div><button id="travel" aria-label="Travel" title="Travel"><i data-icon="arrow-right"></i></button></div></aside>
 </main>
 <dialog id="dialog" aria-labelledby="dialog-title"><div class="modal-top"><div><div class="eyebrow" id="modal-eyebrow"></div><h2 id="dialog-title"></h2></div><button class="icon-btn" id="close" title="Close" aria-label="Close"><i data-icon="x"></i></button></div><div id="modal-body"></div></dialog>

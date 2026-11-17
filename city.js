@@ -1,230 +1,267 @@
-// Dusk skyline. Building blocks stay on a world-aligned street grid, so the
-// regular street gaps still read as avenues through the isometric projection.
+// A metropolitan skyline at real-world scale. The boulevard is 112 metres
+// below the apartment. Every floor shares a datum, even across stepped towers.
 function buildCity(g) {
+  const street = -112;
   const rand = () => g.rand();
-  const between = (low, high) => low + (high - low) * rand();
-  const pick = (items) => items[Math.floor(rand() * items.length)];
-  const box = (...args) => g.box(...args);
-  const glow = (amount) => ({ glow: amount });
-  const ground = -34;
-  const facades = [
-    ['#35405c', '#202e45', '#546480', '#7892ac'],
-    ['#344455', '#223344', '#4e6378', '#7d9aaa'],
-    ['#504359', '#382f46', '#685777', '#9c8295'],
-    ['#39415b', '#272e46', '#556079', '#8592a7'],
-    ['#47465a', '#333449', '#625e73', '#998d98'],
-    ['#34475b', '#263748', '#51667d', '#8d9fba']
+  const range = (lo,hi) => lo+(hi-lo)*rand();
+  const pick = a => a[Math.floor(rand()*a.length)];
+  const facades = {
+    glass: [
+      ['#435d70','#536e7e','#304958','#81949a'],
+      ['#526877','#697e88','#364e5e','#a1a5a0'],
+      ['#526071','#6d7784','#373f51','#9d98a0']
+    ],
+    stone: [
+      ['#827b78','#aaa39a','#474955','#c6b6a3'],
+      ['#747881','#98979b','#444956','#b2ada6'],
+      ['#8b796b','#a99483','#4d4a50','#c2ae93']
+    ],
+    brick: [
+      ['#745d58','#91766b','#443e44','#b39b85'],
+      ['#686168','#887880','#413e4c','#9c9391']
+    ]
+  };
+  const glassM = {mat:'metal'}, stoneM = {mat:'stone'};
+  const lamps = [
+    ['#d7b896','#dec6a0','#c1ac96','#eed2ac'],
+    ['#b6c1bb','#d2ceaf','#aabcc1','#c3cdc7'],
+    ['#cbb49a','#d4ae87','#b5a8a0','#e7c9a3']
   ];
-  const warmWindows = ['#dfaa79', '#eeb98b', '#ffd29b', '#dba6a0', '#b78c76'];
-  const coolWindows = ['#93adca', '#9dacce', '#c3c9da', '#919cbb', '#8fb7c6'];
-  const shadedWindows = ['#2d3a53', '#37455e', '#48536b', '#414960', '#3b3e55'];
+  const light = {glow:.53}, blind = {glow:.32};
+  const coldGlass = ['#506375','#495c6f','#465c6c','#617380','#596b76','#526472'];
+  const dimGlass = ['#475463','#404d5c','#46535e','#4c545e'];
+  const baseBox = (...a) => g.box(...a);
+  const packet = (kind,colors) => ({kind, colors, lights:pick(lamps), lit:range(.22,.51)});
 
-  // A vertical face, ordered counterclockwise towards its outward normal.
-  function panel(wall, across, y, outward, width, height, color, options) {
-    const left = across - width / 2, right = across + width / 2;
-    const bottom = y - height / 2, top = y + height / 2;
-    if (wall === 'front') {
-      g.quad([left,bottom,outward], [right,bottom,outward],
-             [right,top,outward], [left,top,outward], color, options);
-    } else {
-      g.quad([outward,bottom,right], [outward,bottom,left],
-             [outward,top,left], [outward,top,right], color, options);
-    }
+  // Clockwise in the horizontal plane. Each edge's outward normal is its
+  // direction rotated left, allowing details to wrap chamfered corners.
+  function footprint(x,z,w,d,cut) {
+    const l=x-w/2,r=x+w/2,b=z-d/2,f=z+d/2;
+    if (cut<.01) return [[l,f],[r,f],[r,b],[l,b]];
+    return [[l+cut,f],[r-cut,f],[r,f-cut],[r,b+cut],[r-cut,b],[l+cut,b],[l,b+cut],[l,f-cut]];
   }
-
-  function officeWall(wall, origin, face, width, roof, style, distance, palette) {
-    const dense = distance < 29;
-    const spacing = dense ? .83 : 1.08;
-    const cols = Math.max(2, Math.floor((width - .22) / (style === 1 ? .7 : .56)));
-    const cell = (width - .34) / cols;
-    const litChance = between(.18, .48);
-    const warm = rand() < .62;
-    const firstY = Math.max(ground + .7, roof - (dense ? 19 : 13));
-    for (let y = roof - .85; y >= firstY; y -= spacing) {
-      const floorOpen = rand() > .18;
-      if (style === 1) {
-        panel(wall, origin, y, face, width - .21, .38, palette[1]);
+  function edge(a,b) {
+    const w=Math.hypot(b[0]-a[0],b[1]-a[1]), ux=(b[0]-a[0])/w,uz=(b[1]-a[1])/w;
+    return {x:a[0],z:a[1],w,ux,uz,nx:-uz,nz:ux};
+  }
+  function facadePanel(e,u,y,w,h,gap,col,opts) {
+    const u0=u-w/2,u1=u+w/2,y0=y-h/2,y1=y+h/2;
+    const x=e.x+e.nx*gap,z=e.z+e.nz*gap;
+    const xl=x+e.ux*u0,zl=z+e.uz*u0,xr=x+e.ux*u1,zr=z+e.uz*u1;
+    g.quad([xl,y0,zl],[xr,y0,zr],[xr,y1,zr],[xl,y1,zl],col,opts);
+  }
+  function madeVisible(e) {
+    return -(e.x+e.w*.5*e.ux)*e.nx-(e.z+e.w*.5*e.uz)*e.nz>-4;
+  }
+  function cladding(e,bottom,top,building,dist,step) {
+    const {kind,colors,lights,lit}=building, h=top-bottom;
+    const glass=kind==='glass', near=dist<72, far=dist>112;
+    const bays=Math.max(1,Math.round(e.w/(glass?2.05:2.65))), bay=e.w/bays;
+    const deep=glass?coldGlass:dimGlass;
+    const first=street+Math.ceil((bottom-street+1.9)/step)*step;
+    for(let y=first;y<top-1.25;y+=step) {
+      const seen=near||y>-63;
+      const bandH=glass?step*.65:step*.53;
+      if(glass) {
+        // Continuous reflective glass ribbon behind the interior office lights.
+        const bandColor=seen?pick(deep):deep[0];
+        facadePanel(e,e.w/2,y,e.w-.10,bandH,.024,bandColor,glassM);
+        if(near&&y>-50) facadePanel(e,e.w/2,y-bandH/2-.06,e.w-.09,.095,.052,colors[1],glassM);
       }
-      let lights = rand() < litChance;
-      for (let n = 0; n < cols; n++) {
-        // Neighbouring offices share light and blind states within a floor.
-        if (rand() < .44) lights = rand() < litChance;
-        const lit = floorOpen && lights;
-        if (!lit && rand() < (dense ? .38 : .77)) continue;
-        const c = lit ? pick(rand() < (warm ? .78 : .26) ? warmWindows : coolWindows) : pick(shadedWindows);
-        const h = style === 0 ? .37 : style === 1 ? .23 : .47;
-        const cy = y + (lit && rand() < .2 ? -.06 : 0);
-        panel(wall, origin - width/2 + .17 + cell*(n+.5), cy, face+.012,
-              cell*(style === 1 ? .89 : .64), h, c, lit ? glow(between(.44,.74)) : undefined);
-      }
-    }
-    if (style === 2 && dense) {
-      const fins = Math.max(2, Math.floor(width / 1.2));
-      for (let i=1; i<fins; i++) {
-        panel(wall, origin-width/2+width*i/fins, (roof+firstY)/2, face+.026,
-              .055, roof-firstY, palette[2]);
-      }
-    }
-  }
-
-  function rooftopTank(x, y, z, size, tint) {
-    const r = .45*size, support = .62*size, height = 1.04*size;
-    for (const dx of [-.31,.31]) for (const dz of [-.31,.31]) {
-      box(x+dx*size, y+support/2, z+dz*size, .065*size, support, .065*size, '#313247');
-    }
-    box(x,y+support,z,r*2.0,.11*size,r*2.0,'#494052');
-    g.cyl(x,y+support+height*.5,z,r,r,height,12,tint);
-    for (const level of [.18,.5,.84]) {
-      g.cyl(x,y+support+height*level,z,r+.014,r+.014,.035*size,12,'#363744');
-    }
-    g.cyl(x,y+support+height+.14*size,z,.01,r*1.13,.31*size,12,'#595260');
-  }
-
-  function antenna(x, y, z, h, light) {
-    box(x,y+h/2,z,.042,h,.042,'#6b6b7e');
-    box(x,y+h*.76,z,.46,.032,.032,'#777487');
-    box(x,y+h*.87,z,.28,.032,.032,'#777487');
-    if (light) box(x,y+h,z,.09,.09,.09,'#ff736e',glow(.98));
-  }
-
-  function shell(x, z, w, d, top, style, distance, palette) {
-    box(x,(ground+top)/2,z,w,top-ground,d,palette[0]);
-    officeWall('front',x,z+d/2+.014,w,top,style,distance,palette);
-    officeWall('side',z,x+w/2+.014,d,top,style,distance,palette);
-    box(x,top-.13,z,w+.12,.14,d+.12,palette[2]);
-    if (distance > 33) return;
-    // The front parapet and roof membrane are separate colours at this scale.
-    box(x,top+.025,z,w-.12,.055,d-.12,palette[1]);
-    box(x,top+.12,z+d/2-.04,w,.23,.1,palette[2]);
-    box(x,top+.12,z-d/2+.04,w,.23,.1,palette[0]);
-    box(x+w/2-.04,top+.12,z,.1,.23,d,palette[2]);
-    box(x-w/2+.04,top+.12,z,.1,.23,d,palette[0]);
-    if (style === 0) {
-      for (let y=top-3; y>Math.max(ground+1,top-16); y-=4.98) {
-        box(x,y,z,w+.065,.095,d+.065,palette[2]);
-      }
-    }
-  }
-
-  function building(x,z,w,d,top,distance,palette,style) {
-    shell(x,z,w,d,top,style,distance,palette);
-    const choice = rand();
-    const headW = w*between(.36,.64), headD = d*between(.38,.64);
-    const hx = x + w*between(-.1,.1), hz = z + d*between(-.08,.08);
-    if (choice < .39) {
-      const h = between(1,2.9);
-      box(hx,top+h/2,hz,headW,h,headD,palette[0]);
-      box(hx,top+h,hz,headW+.1,.15,headD+.1,palette[2]);
-      for (let j=0; j<3; j++) {
-        panel('front',hx,top+.4+j*.22,hz+headD/2+.012,headW*.63,.07,palette[1]);
-      }
-      if (rand() < .46) antenna(hx,top+h,hz,between(.8,2.85),distance < 28);
-    } else if (choice < .6 && distance < 31) {
-      rooftopTank(hx,top+.05,hz,between(.8,1.2),pick(['#705658','#665460','#625260']));
-    } else if (distance < 35) {
-      for (let j=0; j<2; j++) {
-        const sx=hx+(j-.5)*headW*.66;
-        box(sx,top+.2,hz,headW*.52,.38,headD*.65,palette[2]);
-        g.cyl(sx,top+.405,hz,headW*.16,headW*.16,.04,12,palette[1]);
-      }
-      if (rand() < .35) antenna(x-w*.3,top,z+d*.24,between(1,2.5),false);
-    }
-  }
-
-  // Keep the immediate roofline open in the middle. The lower far-district
-  // roof datum compensates for the game's elevated orthographic camera.
-  const specials = [[-13.7,-.35,4.5,3.6],[1.9,-14.7,4.75,3.7],[-15.3,-14.5,4.7,4.1]];
-  for (let ix=-8; ix<=5; ix++) for (let iz=-9; iz<=4; iz++) {
-    const x=ix*6.15+between(-.38,.38), z=iz*6.05+between(-.45,.45);
-    const depth=-(x*.608+z*.794), screen=x*.794-z*.608;
-    if (depth < 7 || depth > 48 || Math.abs(screen) > 37 || (x > -11.7 && z > -10.7)) continue;
-    if (specials.some(([sx,sz,sw,sd])=>Math.abs(x-sx)<(sw+5.0)/2+.45 && Math.abs(z-sz)<(sd+5.1)/2+.5)) continue;
-    if (rand() < .14) continue;
-    const w=between(2.55,4.85), d=between(2.65,4.85);
-    const top=-depth*.53+between(-3.3,2.7)+Math.min(2.6,Math.abs(screen)*.14);
-    building(x,z,w,d,top,depth,pick(facades),Math.floor(rand()*3));
-  }
-
-  // A stepped limestone-and-copper tower on the west side.
-  // Taller buildings across the river sit behind the low industrial district.
-  // Vary their projected roofline to leave slivers of sunset between towers.
-  for (let layer=0; layer<2; layer++) {
-    for (let i=-17; i<=17; i++) {
-      const across=i*(layer?1.6:2.3)+between(-.45,.45);
-      const away=(layer?68:53)+between(-2.2,2.2);
-      const x=across*.794-away*.608,z=-across*.608-away*.794;
-      const projectedTop=(layer?6.1:4.4)+between(-1.6,1.65);
-      const top=(projectedTop-away*Math.sin(.51))/Math.cos(.51);
-      const w=between(1.2,2.1),d=between(1.2,2.4),p=pick(facades);
-      box(x,top-9,z,w,18,d,p[0]);
-      if(rand()<.53)box(x,top+.24,z,w*.61,.48,d*.62,p[0]);
-      if(rand()<.2)antenna(x,top+.35,z,between(.4,1.3),false);
-      for(let fl=0;fl<13;fl++)for(let j=0;j<3;j++)if(rand()<.51)
-        panel('front',x+(j-1)*w*.28,top-.4-fl*.36,z+d*.5+.015,w*.13,.12,pick(warmWindows),glow(.56));
-    }
-  }
-
-  {
-    const [x,z,w,d]=specials[0], top=-3.9;
-    const p=['#545061','#37394b','#696275','#9a8a90'];
-    shell(x,z,w,d,top,2,18,p);
-    for (const [dy,width,height,c] of [
-      [0,3.38,1.8,'#5e5668'],[1.8,2.65,1.25,'#635a6c'],
-      [3.05,1.72,1.13,'#716779'],[4.18,.94,.78,'#88798a']
-    ]) {
-      const dd=width*.85, cy=top+dy+height/2;
-      box(x,cy,z,width,height,dd,c);
-      for (let j=-1; j<=1; j++) {
-        panel('front',x+j*width*.24,cy,z+dd/2+.015,.086,height*.63,'#e4b88c',glow(.53));
-        panel('side',z+j*dd*.24,cy,x+width/2+.015,.074,height*.63,'#c6a399',glow(.43));
-      }
-      box(x,top+dy+height,z,width+.14,.09,dd+.14,'#8b7e8c');
-    }
-    g.cyl(x,top+5.36,z,.12,.55,.82,4,'#9d919c',{ry:Math.PI*.25});
-    antenna(x,top+5.76,z,1.45,true);
-  }
-
-  // The MIRA hotel has a small rooftop channel-letter sign. Solid rectangular
-  // letter segments remain clear from the apartment's oblique viewing angle.
-  {
-    const [x,z,w,d]=specials[1], top=-3.5, p=facades[2];
-    shell(x,z,w,d,top,0,17,p);
-    rooftopTank(x+1.13,top+.03,z-.62,1.13,'#6b5053');
-    const letters=['10101/11111/10101/10101/10101','1/1/1/1/1',
-      '110/101/110/101/101','010/101/111/101/101'];
-    const pixel=.14, total=(5+1+3+3+3)*pixel;
-    const signZ=z+d*.36, signY=top+.83;
-    for (const dx of [-total*.4,total*.4]) {
-      box(x+dx,top+.4,signZ,.055,.8,.055,'#473b4c');
-      g.beam([x+dx,top+.65,signZ],[x+dx,top+.03,signZ-.59],.034,'#493b4d');
-    }
-    box(x,signY,signZ,total+.27,.89,.09,'#423747');
-    let left=x-total/2;
-    for (const glyph of letters) {
-      const rows=glyph.split('/');
-      rows.forEach((row,r)=>{
-        for (let c=0;c<row.length;c++) if(row[c]==='1') {
-          panel('front',left+(c+.5)*pixel,signY+(2-r)*pixel,signZ+.051,pixel*.98,pixel*.98,'#ff786c',glow(.96));
+      if(!seen && rand()<.45) continue;
+      let open=rand()<lit;
+      const activeFloor=rand()>.17;
+      for(let column=0;column<bays;) {
+        if(rand()<.64) open=rand()<lit;
+        const on=open&&activeFloor;
+        const cluster=glass ? Math.min(bays-column,1+Math.floor(rand()*(far?4:near?2:3))) : 1;
+        if(on || (!glass&&(!far||rand()<.4))) {
+          const u=(column+cluster/2)*bay;
+          const width=glass?cluster*bay-.18:bay*range(.5,.64);
+          const color=on?pick(lights):pick(deep);
+          const shade=on && near && rand()<.24;
+          const shutter=shade?range(.35,.72):0;
+          facadePanel(e,u,y-shutter*.5,width,bandH-shutter,.049,color,on?light:glassM);
+          if(on&&near&&rand()<.20) {
+            facadePanel(e,u,y+bandH*.28-shutter,width*.88,.095,.073,'#eee0bc',{glow:.76});
+          } else if(!glass&&near&&rand()<.33) {
+            facadePanel(e,u,y,width,.065,.073,colors[0],stoneM);
+          }
         }
-      });
-      left+=(rows[0].length+1)*pixel;
+        column+=cluster;
+      }
+    }
+    const fins=glass?bays:Math.round(e.w/5.3);
+    if(!far||glass) for(let c=1;c<fins;c++) {
+      const color=glass?colors[2]:colors[1];
+      facadePanel(e,c*e.w/fins,(bottom+top)/2,glass?(near?.12:.18):.26,h-.13,.083,color,glass?glassM:stoneM);
+    }
+    if(!glass && near && e.w>8) {
+      for(let y=top-11;y>bottom+3;y-=step*5) facadePanel(e,e.w/2,y,e.w,.23,.095,colors[1],stoneM);
+    }
+  }
+  function block(x,z,w,d,bottom,top,chamfer,building,dist,step) {
+    const outline=footprint(x,z,w,d,chamfer);
+    const {colors,kind}=building;
+    for(let i=0;i<outline.length;i++) {
+      const a=outline[i], b=outline[(i+1)%outline.length], e=edge(a,b);
+      facadePanel(e,e.w/2,(bottom+top)/2,e.w,top-bottom,0,colors[0],kind==='glass'?glassM:stoneM);
+      if(madeVisible(e)) {
+        if(e.w>2.1) cladding(e,bottom,top,building,dist,step);
+        facadePanel(e,e.w/2,top-.18,e.w,.34,.10,colors[1],glassM);
+        if(top>street+25 && e.w>4.5 && dist<115) {
+          facadePanel(e,e.w/2,top-.55,e.w,.19,.07,colors[2],glassM);
+        }
+      }
+      const mid=[(a[0]+b[0])/2,top,(a[1]+b[1])/2];
+      g.quad([x,top,z],[a[0],top,a[1]],mid,[b[0],top,b[1]],colors[2],stoneM);
     }
   }
 
-  // A mid-distance radio building breaks up the mechanical roof silhouettes.
+  function antenna(x,y,z,height) {
+    const mast='#646974';
+    g.cyl(x,y+height/2,z,.045,.16,height,6,mast,glassM);
+    baseBox(x,y+height*.80,z,.95,.07,.09,mast,glassM);
+    baseBox(x,y+height+.04,z,.16,.15,.16,'#ff846e',{glow:.89});
+  }
+  function roofServices(x,y,z,w,d) {
+    const c=pick(['#6d7076','#757578','#78767a']);
+    const rw=w*.34,rd=d*.31;
+    baseBox(x-w*.12,y+1.0,z+d*.05,rw,2.0,rd,c,stoneM);
+    for(let i=0;i<5;i++) {
+      baseBox(x-w*.12,y+.39+i*.25,z+d*.05+rd/2+.04,rw*.77,.115,.07,'#434a52',glassM);
+    }
+    for(let i=0;i<2;i++) {
+      const px=x+w*.23, pz=z+(i-.5)*d*.25;
+      baseBox(px,y+.46,pz,w*.15,.92,d*.15,'#7b8081',glassM);
+      g.cyl(px,y+.97,pz,Math.min(w,d)*.056,Math.min(w,d)*.056,.12,10,'#424c54');
+    }
+    if(rand()<.36) antenna(x-w*.12,y+2,z+d*.05,range(2.2,4.6));
+  }
+  function roofTank(x,y,z,r) {
+    const legs=r*1.12, h=r*2.15;
+    for(const a of [-.6,.6]) for(const b of [-.6,.6]) {
+      baseBox(x+a*r,y+legs*.5,z+b*r,.12,legs,.12,'#454950',glassM);
+    }
+    g.cyl(x,y+legs+h/2,z,r,r,h,14,'#7a6b61',{mat:'wood'});
+    for(const k of [.06,.28,.58,.87]) {
+      g.cyl(x,y+legs+h*k,z,r+.03,r+.03,.075,14,'#45484b',glassM);
+    }
+    g.cyl(x,y+legs+h+r*.24,z,0,r*1.06,r*.48,14,'#626265',glassM);
+  }
+  function balconies(x,z,w,d,top,step) {
+    const normal=Math.sign(-z)||1;
+    const width=w*.32, cx=x-w*.20, face=z+normal*d*.5;
+    for(let y=top-step*1.15;y>Math.max(street+5,top-45);y-=step) {
+      const outside=face+normal*1.15;
+      baseBox(cx,y,face+normal*.60,width,.21,1.35,'#a0998b',stoneM);
+      baseBox(cx,y+.63,outside,width,1.03,.09,'#68767c',glassM);
+      baseBox(cx,y+1.18,outside,width,.09,.13,'#a5a9a5',glassM);
+      baseBox(cx+width/2-.08,y+.68,face+normal*.64,.13,1.22,1.15,'#807c78',stoneM);
+    }
+  }
+
+  function tower(x,z,w,d,top,style,form) {
+    const dist=Math.hypot(x,z);
+    const skin=packet(style,pick(facades[style]));
+    const step=style==='brick'?2.85:style==='stone'?3.00:3.25;
+    const bevel=style==='glass' && rand()<.61 ? Math.min(w,d)*range(.09,.20) : 0;
+    let y=top;
+    if(form==='stepped') {
+      const shoulder=top-range(8.0,13.2);
+      block(x,z,w,d,street,shoulder,bevel,skin,dist,step);
+      w*=.76;d*=.78;
+      block(x,z,w,d,shoulder,top,bevel*.72,skin,dist,step);
+    } else if(form==='deco') {
+      let bottom=street;
+      for(const [s,level] of [[1,top-17],[.79,top-8.5],[.57,top-3.6],[.34,top]]) {
+        block(x,z,w*s,d*s,bottom,level,Math.min(w,d)*s*.14,skin,dist,step);
+        bottom=level;
+      }
+      for(const [s,lo,hi] of [[.30,0,1.3],[.21,1.3,2.9],[.12,2.9,4.4]]) {
+        g.cyl(x,top+(lo+hi)/2,z,w*s*.82,w*s,hi-lo,4,'#ac9987',{ry:Math.PI*.25,mat:'metal'});
+      }
+      antenna(x,top+4.4,z,7.2);
+      return;
+    } else {
+      block(x,z,w,d,street,top,bevel,skin,dist,step);
+    }
+    if((style==='stone'||style==='brick')&&dist<80&&form!=='stepped'&&rand()<.64) balconies(x,z,w,d,top,step);
+    if(dist<100) {
+      if(style==='brick') roofTank(x+w*.16,y+.08,z-d*.10,Math.min(w,d)*.12);
+      else roofServices(x,y,z,w,d);
+    } else {
+      baseBox(x,y+1.25,z,w*.33,2.5,d*.38,skin.colors[1],stoneM);
+    }
+  }
+
+  // Near and middle landmarks establish a varied silhouette from the bed, the
+  // desk and the corner glazing. The central northwest view opens to the sky.
+  const landmarks=[
+    [-38,12,15,19,-16,'stone','slab'],
+    [-45,-21,13,18,7,'glass','stepped'],
+    [-25,-49,14,14,-23,'brick','slab'],
+    [19,-42,16,19,10,'glass','stepped'],
+    [-7,-75,14,18,1,'stone','slab'],
+    [33,-100,17,16,32,'stone','deco'],
+    [-79,-69,16,18,20,'glass','stepped'],
+    [-91,10,17,19,37,'glass','stepped'],
+    [-78,43,14,14,14,'stone','deco'],
+    [-37,-100,15,18,21,'glass','stepped'],
+    [52,-72,16,20,18,'glass','slab']
+  ];
+  const blocks=[...landmarks];
+  for(let ix=-6;ix<=5;ix++) for(let iz=-6;iz<=5;iz++) {
+    const x=ix*24+range(-3.9,3.9),z=iz*24+range(-4,4);
+    const dist=Math.hypot(x,z);
+    if(dist<48||dist>153||(x>-17&&z>-18)||rand()<.17) continue;
+    const w=range(9,18.5),d=range(10,20.5);
+    if(blocks.some(b=>Math.abs(x-b[0])<(w+b[2])*.5+2.3 && Math.abs(z-b[1])<(d+b[3])*.5+2.3)) continue;
+    const inSunsetGap = x<0&&z<0 && Math.abs(x/z-.82)<.27;
+    const top=inSunsetGap?range(-42,-15):range(-40,dist>100?32:14);
+    const style=pick(['glass','glass','glass','stone','stone','brick']);
+    blocks.push([x,z,w,d,top,style,rand()<.42?'stepped':'slab']);
+  }
+  for(const args of blocks) tower(...args);
+
+  // The south bank is a second, more distant skyline, behind the roof tanks
+  // and office blocks on this side of the river. All silhouettes have depth.
+  for(let row=0;row<2;row++)for(let i=-10;i<=10;i++){
+    const x=i*21+range(-3,3),z=-181-row*48+range(-7,7);
+    if(Math.abs(x+75)<19&&row===0)continue;
+    const w=range(10,18),d=range(11,19),top=range(-41,26)+(row===1?7:0);
+    tower(x,z,w,d,top,pick(['glass','stone','brick']),rand()<.45?'stepped':'slab');
+  }
+  tower(-75,-178,22,22,53,'stone','deco');
+  // Aurora Exchange rises above the river with a tapered, triangulated crown.
   {
-    const [x,z,w,d]=specials[2], top=-7.2, p=facades[1];
-    shell(x,z,w,d,top,1,24,p);
-    box(x,top+.48,z,w*.64,.96,d*.62,p[2]);
-    const y=top+.96;
-    for (const dx of [-.37,.37]) for (const dz of [-.37,.37]) {
-      g.beam([x+dx,y,z+dz],[x+dx*.26,y+3.55,z+dz*.26],.042,'#727484');
+    const x=4,z=-173,w=20,d=16,top=39,p=packet('glass',facades.glass[1]);
+    block(x,z,w,d,street,top,2.6,p,175,3.35);
+    const low=footprint(x,z,w,d,2.6),peak=[x+4.3,top+17.8,z-1.4];
+    for(let i=0;i<low.length;i++){
+      const a=[low[i][0],top,low[i][1]],b=[low[(i+1)%low.length][0],top,low[(i+1)%low.length][1]];
+      g.polygon([b,a,peak],i%2?'#627984':'#495c73',glassM);
+      g.beam(a,peak,.12,'#e4bd8e',{glow:.25,mat:'brass'});
     }
-    for(let i=0;i<4;i++) {
-      const a=y+i*.83, b=a+.83, r=.37-i*.061, nr=r-.061;
-      g.beam([x-r,a,z+r],[x+nr,b,z+nr],.021,'#777488');
-      g.beam([x+r,a,z+r],[x-nr,b,z+nr],.021,'#777488');
+    antenna(peak[0],peak[1],peak[2],5.2);
+  }
+
+  // The street plane and lit traffic read through lower windows at acute angles.
+  baseBox(0,street-.63,0,335,1,335,'#40464f',stoneM);
+  for(let i=-5;i<=4;i++) {
+    const a=i*24+12;
+    baseBox(a,street-.104,0,5.25,.055,310,'#343b44');
+    baseBox(0,street-.070,a,308,.055,5.25,'#353c46');
+    for(let j=-5;j<=4;j++) {
+      const b=j*24;
+      if(Math.hypot(a,b)>139||a>12&&b>12) continue;
+      const z=b+range(-6,6);
+      baseBox(a-.77,street+.15,z,1.03,.38,1.96,pick(['#8c9292','#866d69','#4f626c']),{mat:'trafficZ'});
+      baseBox(a-.77,street+.31,z-.96,.74,.12,.11,'#f6dbaf',{glow:.74,mat:'trafficZ'});
+      if((i+j)%2===0) {
+        baseBox(b+4.8,street+.15,a+.86,1.95,.39,1.04,'#707b80',{mat:'trafficX'});
+        baseBox(b+5.73,street+.31,a+.86,.12,.13,.73,'#ffbf8a',{glow:.69,mat:'trafficX'});
+      }
     }
-    antenna(x,y+3.5,z,1.26,true);
   }
 }
